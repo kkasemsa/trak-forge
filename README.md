@@ -26,7 +26,7 @@ Not affiliated with or endorsed by Yamaha. SEQTRAK is a Yamaha trademark.
 |---|---|
 | Protocol code (framing, retries, decoding) | Tested against a simulator: `npm test`, 22 tests. Byte strings are checked against the worked examples in seqtrak-docs. |
 | Screens | Checked in a desktop browser in demo mode. |
-| Swift CoreMIDI plugin | Written without a Mac. The `build` workflow on GitHub compiles it; check that it is green. **Never run against a real SEQTRAK.** |
+| Swift CoreMIDI plugin | Compiles: the `build` workflow on GitHub builds the app for the iOS Simulator. **Never run against a real SEQTRAK.** |
 | The whole app on an iPad with a SEQTRAK | **Not tested.** This is the first thing to do. |
 
 ## First test on hardware
