@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="color-scheme" content="dark">
+<title>TRAK FORGE</title>
+<link rel="icon" href="icons/icon-512.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand">TRAK FORGE <span id="version" class="dim"></span></div>
+  <div id="status" class="pill">Starting</div>
+  <button id="connect" class="primary">Connect</button>
+</header>
+
+<main>
+  <p id="banner" class="banner"></p>
+
+  <section id="ports" class="card" hidden>
+    <h2>MIDI ports</h2>
+    <p id="ports-help" class="dim"></p>
+    <div class="row">
+      <label>From SEQTRAK <select id="port-in"></select></label>
+      <label>To SEQTRAK <select id="port-out"></select></label>
+      <button id="port-use">Use these ports</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Session</h2>
+      <button id="read-all" disabled>Read everything</button>
+    </div>
+    <div id="session" class="facts"></div>
+    <div id="progress" class="progress" hidden><div id="progress-bar"></div><span id="progress-text"></span></div>
+  </section>
+
+  <section class="card">
+    <h2>Tracks</h2>
+    <p class="dim">Notes are read from the pattern currently selected on each track.</p>
+    <div id="tracks"></div>
+  </section>
+
+  <section class="card">
+    <h2>Scenes</h2>
+    <div id="scenes" class="dim">Not read yet.</div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Link</h2>
+      <button id="copy-report" disabled>Copy report</button>
+    </div>
+    <div id="stats" class="facts"></div>
+    <pre id="log" class="log"></pre>
+  </section>
+</main>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

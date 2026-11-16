@@ -1,0 +1,13 @@
+node_modules/
+.DS_Store
+*.log
+www/
+ios/App/local.xcconfig
+ios/App/CapApp-SPM/.build/
+ios/App/App.xcodeproj/project.xcworkspace/xcuserdata/
+ios/App/App.xcodeproj/xcuserdata/
+ios/App/App.xcworkspace/
+.build/
+DerivedData/
+tests/browser/shots/
+store/screenshots/

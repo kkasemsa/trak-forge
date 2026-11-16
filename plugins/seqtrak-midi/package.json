@@ -1,0 +1,9 @@
+{
+  "name": "seqtrak-midi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Capacitor plugin: CoreMIDI SysEx send/receive for TRAK FORGE.",
+  "files": ["ios/Sources", "Package.swift"],
+  "capacitor": { "ios": { "src": "ios" } },
+  "peerDependencies": { "@capacitor/core": ">=8.0.0" }
+}

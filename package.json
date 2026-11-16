@@ -1,0 +1,26 @@
+{
+  "name": "trak-forge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TRAK FORGE: an iPad companion for the Yamaha SEQTRAK. Phase 1 is a read-only probe over USB MIDI.",
+  "type": "module",
+  "scripts": {
+    "start": "npx http-server . -p 8080 -c-1",
+    "test": "node tests/protocol.test.mjs",
+    "presets": "node scripts/make-presets.mjs",
+    "app:build": "node scripts/build-app.mjs",
+    "app:sync": "node scripts/build-app.mjs && npx cap sync ios",
+    "app:open": "npx cap open ios",
+    "ios:setup": "bash scripts/mac-setup.sh",
+    "ios:team": "node scripts/set-team.mjs"
+  },
+  "dependencies": {
+    "@capacitor/core": "8.5.3",
+    "@capacitor/ios": "8.5.3",
+    "@capacitor/status-bar": "^8.0.4",
+    "seqtrak-midi": "file:./plugins/seqtrak-midi"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.3"
+  }
+}

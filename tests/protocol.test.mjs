@@ -1,0 +1,207 @@
+// Protocol core tests. The byte strings asserted here are copied from the worked examples in
+// jaeggerr/seqtrak-docs (02-sysex-format, 04-sequencer-editing, 10-verified-behaviour), so a
+// failure means this code and the documented wire format disagree.
+import assert from 'node:assert/strict';
+import { paramRequest, paramChange, parse, from14, to14, hex } from '../js/seqtrak/sysex.js';
+import { Link } from '../js/seqtrak/link.js';
+import { SimTransport } from '../js/seqtrak/sim.js';
+import { readSession, readPart, readPattern, readScenes, noteName } from '../js/seqtrak/probe.js';
+import { preset } from '../js/seqtrak/catalog.js';
+
+let passed = 0;
+const test = async (name, fn) => { await fn(); passed++; console.log(`  ok  ${name}`); };
+const bytes = s => s.split(' ').map(h => parseInt(h, 16));
+
+// Deterministic random so the drop tests always drop the same requests.
+function seeded(seed) {
+  let s = seed >>> 0;
+  return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 2 ** 32; };
+}
+
+await test('tempo request matches the documented frame', () => {
+  assert.equal(hex(paramRequest([0x30, 0x40, 0x76])), 'F0 43 30 7F 1C 0C 30 40 76 F7');
+});
+
+await test('step read request matches the documented frame', () => {
+  assert.equal(hex(paramRequest([0x70, 0x40, 0x03])), 'F0 43 30 7F 1C 0C 70 40 03 F7');
+});
+
+await test('tempo reply decodes to 119 BPM', () => {
+  const msg = parse(bytes('F0 43 10 7F 1C 0C 30 40 76 00 77 F7'));
+  assert.deepEqual(msg.addr, [0x30, 0x40, 0x76]);
+  assert.equal(from14(...msg.data), 119);
+});
+
+await test('device number nibble is masked', () => {
+  assert.equal(parse(bytes('F0 43 15 7F 1C 0C 30 40 76 00 77 F7')).kind, 'change');
+});
+
+await test('zero-data reply parses as empty, not as failure', () => {
+  assert.deepEqual(parse(bytes('F0 43 10 7F 1C 0C 70 40 03 F7')).data, []);
+});
+
+await test('bulk dumps and foreign SysEx are rejected', () => {
+  assert.equal(parse(bytes('F0 43 00 7F 1C 00 34 0C 00 00 00 01 F7')), null);
+  assert.equal(parse(bytes('F0 7E 7F 06 02 43 00 41 64 06 0A 00 00 7F F7')), null);
+  assert.equal(parse([0xf0, 0x43, 0x10]), null);
+});
+
+await test('14-bit values are MSB first', () => {
+  assert.deepEqual(to14(960), [0x07, 0x40]);          // documented: eventTime 960 reads back 07 40
+  assert.equal(from14(0x07, 0x40), 960);
+  assert.deepEqual(to14(120), [0x00, 0x78]);
+});
+
+await test('8-bit data is refused', () => {
+  assert.throws(() => paramChange([0x30, 0x40, 0x76], [0x80]));
+  assert.throws(() => paramRequest([0x30, 0x40]));
+});
+
+await test('preset catalogue matches the names read on hardware', () => {
+  assert.equal(preset(50).name, 'Rumble Kick 2');
+  assert.equal(preset(908).name, 'Fat Sine');
+  assert.equal(preset(1517).name, 'Trumpet');
+  assert.equal(preset(1990).name, 'FM Ambient Pad');
+  assert.equal(preset(3).name, 'Tight Punchy Kick 3');
+  assert.equal(preset(0), null);
+  assert.equal(preset(99999), null);
+});
+
+await test('note names use C3 = 60', () => {
+  assert.equal(noteName(60), 'C3');
+  assert.equal(noteName(36), 'C1');
+  assert.equal(noteName(69), 'A3');
+});
+
+const fast = { paceMs: 0, timeoutMs: 20 };
+
+await test('identity check recognises a SEQTRAK and its OS version', async () => {
+  const link = new Link(new SimTransport(), fast);
+  const id = await link.identity();
+  assert.equal(id.ok, true);
+  assert.equal(id.isSeqtrak, true);
+  assert.equal(id.osVersion, 2.0);
+});
+
+await test('session read', async () => {
+  const link = new Link(new SimTransport(), fast);
+  const s = await readSession(link);
+  assert.deepEqual(s, { currentProject: 0, playing: false, battery: 70, tempo: 124, patternSelectMode: 0, masterStep: 16, scale: 1, key: 'A' });
+});
+
+await test('part read resolves type, sound and mute; never asks the sampler for its sound', async () => {
+  const t = new SimTransport();
+  const link = new Link(t, fast);
+  const dx = await readPart(link, 9);
+  assert.equal(dx.type, 'DX');
+  assert.equal(preset(dx.soundNumber).name, 'FM Ambient Pad');
+  assert.equal((await readPart(link, 5)).muted, true);
+  t.sent.length = 0;
+  const sampler = await readPart(link, 10);
+  assert.equal(sampler.type, 'SAMPLER');
+  assert.equal(sampler.soundNumber, null);
+  assert.equal(t.sent.some(f => f[6] === 0x01 && f[7] === 0x1a && f[8] === 0x33), false);
+  assert.equal(link.stats.failures, 0);
+});
+
+await test('drum pattern reads through step record', async () => {
+  const link = new Link(new SimTransport(), fast);
+  const p = await readPattern(link, 0, 1, 16);
+  assert.equal(p.model, 'step');
+  assert.deepEqual(p.events.map(e => e.step), [0, 4, 8, 12]);
+  assert.equal(p.events[0].gate, 120);
+  assert.equal(p.events[1].tick, 4 * 120 + 60);
+  assert.equal(p.complete, true);
+});
+
+await test('re-typed drum part reads through the drum piano roll, with its chord', async () => {
+  const t = new SimTransport();
+  const link = new Link(t, fast);
+  const p = await readPattern(link, 6, 2, 16);
+  assert.equal(p.model, 'roll');
+  assert.deepEqual(p.events.map(e => e.note), [57, 60, 64]);
+  assert.ok(p.events.every(e => e.step === 0));
+  assert.equal(t.sent[0][6], 0x25);
+  assert.equal(t.sent[0][7], 0x60);                    // global part number 6 in the high nibble
+});
+
+await test('native synth parts use the local index 0-3, not the global part number', async () => {
+  const t = new SimTransport();
+  const link = new Link(t, fast);
+  const p = await readPattern(link, 9, 4, 16);          // DX = local index 2
+  assert.deepEqual(p.events.map(e => e.step), [2, 5, 9, 13]);
+  assert.equal(t.sent[0][6], 0x75);
+  assert.equal(t.sent[0][7], 0x20);
+  assert.equal(p.complete, true);
+});
+
+await test('event index above 127 spills into the address-mid byte', async () => {
+  const t = new SimTransport({ memory: new Map() });
+  const mem = t.memory;
+  for (let i = 0; i < 130; i++) mem.set([0x75, (1 << 4) | (i >> 7), i & 0x7f].join(','), [...to14(i * 120 + 60), 0, 60, 100, 0, 0, 120]);
+  mem.set([0x75, 0x11, 2].join(','), []);
+  const p = await readPattern(new Link(t, fast), 8, 2, 128);
+  assert.equal(p.events.length, 130);
+  assert.equal(p.events[129].step, 129);
+  assert.equal(p.complete, true);
+});
+
+await test('scenes: three exist, mutes are read from offset 14 not 13', async () => {
+  const link = new Link(new SimTransport(), fast);
+  const { scenes, unknown } = await readScenes(link);
+  assert.equal(unknown, 0);
+  assert.equal(scenes.length, 3);
+  assert.deepEqual(scenes[0].mutes, [false, true, true, false, true, true, true, false, true, true, true]);
+  assert.equal(scenes[0].length, 64);
+});
+
+await test('dropped requests are retried and the result is still complete', async () => {
+  const link = new Link(new SimTransport({ dropRate: 0.3, random: seeded(7) }), fast);
+  const p = await readPattern(link, 0, 1, 16);
+  assert.deepEqual(p.events.map(e => e.step), [0, 4, 8, 12]);
+  assert.equal(p.complete, true);
+  assert.ok(link.stats.retries > 0, 'the test must actually have exercised a retry');
+});
+
+await test('a silent device is reported as unknown, never as an empty pattern', async () => {
+  const link = new Link(new SimTransport({ dropRate: 1 }), { ...fast, attempts: 2 });
+  const s = await readSession(link);
+  assert.equal(s.tempo, null);
+  assert.equal(s.playing, null);
+  const drum = await readPattern(link, 0, 1, 4);
+  assert.equal(drum.complete, false);
+  assert.deepEqual(drum.unknownSteps, [0, 1, 2, 3]);
+  const roll = await readPattern(link, 7, 2, 16);
+  assert.equal(roll.complete, false);
+  assert.equal((await link.identity()).ok, false);
+});
+
+await test('the probe sends only read frames', async () => {
+  const t = new SimTransport();
+  const link = new Link(t, fast);
+  await link.identity();
+  await readSession(link);
+  for (let p = 0; p < 11; p++) {
+    const part = await readPart(link, p);
+    await readPattern(link, p, part.typeRaw, part.steps);
+  }
+  await readScenes(link);
+  const identity = 'F0 7E 7F 06 01 F7';
+  for (const f of t.sent) {
+    const isRequest = f.length === 10 && (f[2] & 0xf0) === 0x30;
+    assert.ok(isRequest || hex(f) === identity, `not a read frame: ${hex(f)}`);
+  }
+  assert.ok(t.sent.length > 100);
+});
+
+await test('concurrent reads are serialised and each gets its own answer', async () => {
+  const link = new Link(new SimTransport({ latencyMs: 3 }), { paceMs: 0, timeoutMs: 100 });
+  const [a, b, c] = await Promise.all([
+    link.read([0x30, 0x40, 0x76]), link.read([0x01, 0x10, 0x02]), link.read([0x30, 0x40, 0x7f]),
+  ]);
+  assert.equal(from14(...a.data), 124);
+  assert.deepEqual(b.data, [70]);
+  assert.deepEqual(c.data, [0x49]);
+});
+
+console.log(`${passed} tests passed`);

@@ -1,0 +1,8 @@
+// App version, build number, and signing team.
+// The real values live in local.xcconfig, which isn't committed, so `git pull` never conflicts:
+//   npm run app:sync          writes MARKETING_VERSION (from js/version.js) and CURRENT_PROJECT_VERSION (commit count)
+//   npm run ios:team -- ID    writes DEVELOPMENT_TEAM
+// This repository is public, so no team ID is committed here.
+MARKETING_VERSION = 0.1.0
+CURRENT_PROJECT_VERSION = 1
+#include? "local.xcconfig"

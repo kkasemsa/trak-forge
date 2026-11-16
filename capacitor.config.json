@@ -1,0 +1,16 @@
+{
+  "appId": "net.kktp.trakforge",
+  "appName": "TRAK FORGE",
+  "webDir": "www",
+  "backgroundColor": "#17140f",
+  "ios": {
+    "contentInset": "never",
+    "zoomEnabled": false
+  },
+  "plugins": {
+    "StatusBar": {
+      "style": "DARK",
+      "overlaysWebView": true
+    }
+  }
+}
