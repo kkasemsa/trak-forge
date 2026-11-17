@@ -8,7 +8,7 @@
 //     nothing: retry, and only then report "no reply"
 //   - a reply with zero data bytes is a real answer ("empty"), not a failure
 //   - a round trip takes about 250 ms over USB
-import { paramRequest, parse, sameAddress, hex } from './sysex.js';
+import { paramRequest, paramChange, parse, sameAddress, hex } from './sysex.js';
 
 export const IDENTITY_REQUEST = [0xf0, 0x7e, 0x7f, 0x06, 0x01, 0xf7];
 const isIdentityReply = b => b.length >= 12 && b[0] === 0xf0 && b[1] === 0x7e && b[3] === 0x06 && b[4] === 0x02;
@@ -16,16 +16,17 @@ const isIdentityReply = b => b.length >= 12 && b[0] === 0xf0 && b[1] === 0x7e &&
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 export class Link {
-  constructor(transport, { paceMs = 2, timeoutMs = 700, attempts = 4, log = null } = {}) {
+  constructor(transport, { paceMs = 2, writePaceMs = 5, timeoutMs = 700, attempts = 4, log = null } = {}) {
     this.transport = transport;
     this.paceMs = paceMs;
+    this.writePaceMs = writePaceMs;
     this.timeoutMs = timeoutMs;
     this.attempts = attempts;
     this.log = log;
     this.pending = null;
     this.pendingIdentity = null;
     this.queue = Promise.resolve();
-    this.stats = { requests: 0, replies: 0, retries: 0, failures: 0 };
+    this.stats = { requests: 0, replies: 0, retries: 0, failures: 0, writes: 0 };
     this.unsubscribe = transport.onSysex(bytes => this.receive(bytes));
   }
 
@@ -54,6 +55,21 @@ export class Link {
   // Reads are serialised: one request on the wire at a time, so replies cannot be confused.
   read(addr) {
     const run = () => this.readNow(addr);
+    const result = this.queue.then(run, run);
+    this.queue = result.catch(() => {});
+    return result;
+  }
+
+  // Sends one Parameter Change. The SEQTRAK does not acknowledge writes, so a caller must read
+  // the value back to know it landed. Writes share the read queue: one message at a time.
+  write(addr, data) {
+    const run = async () => {
+      const frame = paramChange(addr, data);
+      this.log?.('out', frame);
+      await this.transport.send(frame);
+      this.stats.writes++;
+      await sleep(this.writePaceMs);
+    };
     const result = this.queue.then(run, run);
     this.queue = result.catch(() => {});
     return result;

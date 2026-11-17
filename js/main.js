@@ -5,6 +5,7 @@ import { Link } from './seqtrak/link.js';
 import { hex } from './seqtrak/sysex.js';
 import { readSession, readPart, readPattern, readScenes, PARTS, PART_COUNT, noteName } from './seqtrak/probe.js';
 import { preset } from './seqtrak/catalog.js';
+import { writeDrumPattern, readTarget, everyNth } from './seqtrak/writer.js';
 
 const $ = id => document.getElementById(id);
 
@@ -36,6 +37,7 @@ const state = {
   scenes: null,
   busy: false,
   error: null,
+  write: { armed: null, result: null, snapshot: null, restored: false },
   log: [],
 };
 
@@ -74,7 +76,7 @@ function renderStatus() {
     banner.textContent = 'Demo mode. This is not a real SEQTRAK: every value below comes from a built-in simulator. Run the iPad app to read your machine.';
   } else {
     banner.className = 'banner';
-    banner.textContent = 'Read-only build. It asks the SEQTRAK for values and never changes anything on it.';
+    banner.textContent = 'Reading changes nothing on the SEQTRAK. Only the Write test card writes to it.';
   }
   $('connect').textContent = state.connected ? 'Reconnect' : 'Connect';
   $('connect').disabled = state.busy;
@@ -137,7 +139,7 @@ function renderTracks() {
   box.replaceChildren();
   for (let p = 0; p < PART_COUNT; p++) {
     const part = state.parts[p];
-    const row = el('div', { class: part?.muted ? 'track muted' : 'track' });
+    const row = el('div', { class: 'track' });
     if (!part) {
       row.append(el('div', { class: 'track-head' }, el('div', { class: 'track-name' }, PARTS[p]), el('div', { class: 'tag' }, '-'), el('div', { class: 'dim' }, 'Not read yet.')));
       box.append(row);
@@ -153,7 +155,6 @@ function renderTracks() {
       part.pattern === null ? 'pattern ?' : `pattern ${part.pattern + 1}`,
       part.steps === null ? '? steps' : `${part.steps} steps`,
       part.volume === null ? 'vol ?' : `vol ${part.volume}`,
-      part.muted ? 'muted' : null,
     ].filter(Boolean).join(' · ');
     row.append(el('div', { class: 'track-head' },
       el('div', { class: 'track-name' }, part.name),
@@ -192,14 +193,46 @@ function renderLink() {
   const box = $('stats');
   box.replaceChildren();
   if (stats) {
-    box.append(fact('Requests', stats.requests), fact('Replies', stats.replies), fact('Retries', stats.retries), fact('No reply', stats.failures));
+    box.append(fact('Requests', stats.requests), fact('Replies', stats.replies), fact('Retries', stats.retries), fact('No reply', stats.failures), fact('Writes', stats.writes));
   }
   const log = $('log');
   log.textContent = state.log.slice(-60).join('\n');
   log.scrollTop = log.scrollHeight;
 }
 
+function stepGrid(snapshot) {
+  return el('div', { class: 'grid' }, snapshot.map((st, i) =>
+    el('div', { class: ['cell', i % 4 === 0 ? 'beat' : '', st ? 'hit' : ''].filter(Boolean).join(' ') }, i + 1)));
+}
+
+function renderWrite() {
+  const w = state.write;
+  const kick = $('write-kick');
+  kick.disabled = !state.connected || state.busy;
+  kick.className = w.armed ? 'danger' : '';
+  kick.textContent = w.armed
+    ? `Confirm: overwrite KICK, pattern ${w.armed.pattern + 1}, project ${w.armed.project + 1}`
+    : 'Write test kick';
+  $('write-cancel').hidden = !w.armed;
+  $('write-restore').disabled = !state.connected || state.busy || !w.snapshot;
+  const box = $('write-result');
+  box.replaceChildren();
+  const r = w.result;
+  if (!r) return;
+  const where = `KICK, pattern ${r.target.pattern + 1}, project ${r.target.project + 1}`;
+  const verdict = r.ok
+    ? `${w.restored ? 'Old pattern restored' : 'Written and verified'}: ${where}. ${r.changed} step(s) changed.`
+    : r.moved
+      ? `The project or pattern changed on the SEQTRAK during the write (${where}). Check the machine.`
+      : `Read-back does not match on step(s) ${r.mismatches.map(i => i + 1).join(', ')} (${where}).`;
+  box.className = r.ok ? 'result ok' : 'result bad';
+  box.append(el('b', {}, r.ok ? 'OK. ' : 'Not verified. '), verdict,
+    el('div', { class: 'label' }, 'Before'), stepGrid(r.before),
+    el('div', { class: 'label' }, 'After (read back from the SEQTRAK)'), stepGrid(r.after));
+}
+
 function render() {
+  renderWrite();
   renderStatus();
   renderSession();
   renderTracks();
@@ -226,7 +259,8 @@ async function run(action) {
     await action();
   } catch (e) {
     console.error(e);
-    state.error = `Something went wrong: ${e?.message || e}`;
+    state.error = e?.name === 'WriteRefused' || /Nothing was written/.test(e?.message || '') ? e.message : `Something went wrong: ${e?.message || e}`;
+    state.write.armed = null;
   }
   state.busy = false;
   progress(null);
@@ -293,6 +327,38 @@ async function readEverything() {
   state.scenes = await readScenes(state.link, (done, total) => progress('Scenes', done, total));
 }
 
+// First press reads where the write would land and arms the button; second press writes.
+async function writeKick() {
+  const w = state.write;
+  if (!w.armed) {
+    w.armed = await readTarget(state.link, 0);
+    return;
+  }
+  const armed = w.armed;
+  w.armed = null;
+  const now = await readTarget(state.link, 0);
+  if (now.project !== armed.project || now.pattern !== armed.pattern) {
+    throw new Error('The project or pattern changed on the SEQTRAK since you pressed the button. Nothing was written.');
+  }
+  const r = await writeDrumPattern(state.link, 0, everyNth(now.steps, 4), (label, d, t) => progress(`${label} step ${d} of ${t}`, d, t));
+  w.result = r;
+  w.restored = false;
+  if (!w.snapshot) w.snapshot = { target: r.target, steps: r.before };   // keep the ORIGINAL pattern
+  state.patterns[0] = null;
+}
+
+async function restoreKick() {
+  const w = state.write;
+  const now = await readTarget(state.link, 0);
+  if (now.project !== w.snapshot.target.project || now.pattern !== w.snapshot.target.pattern) {
+    throw new Error(`The saved pattern belongs to project ${w.snapshot.target.project + 1}, pattern ${w.snapshot.target.pattern + 1}. Select that on the SEQTRAK first. Nothing was written.`);
+  }
+  w.result = await writeDrumPattern(state.link, 0, w.snapshot.steps, (label, d, t) => progress(`${label} step ${d} of ${t}`, d, t));
+  w.restored = true;
+  if (w.result.ok) w.snapshot = null;
+  state.patterns[0] = null;
+}
+
 // Everything read so far, as text to paste into a message when something looks wrong.
 function report() {
   return JSON.stringify({
@@ -303,6 +369,7 @@ function report() {
     session: state.session,
     parts: state.parts.map(p => p && { ...p, sound: preset(p.soundNumber)?.name ?? null }),
     patterns: state.patterns,
+    write: state.write.result,
     scenes: state.scenes,
     stats: state.link?.stats ?? null,
     log: state.log,
@@ -337,6 +404,9 @@ async function start() {
   $('connect').addEventListener('click', () => run(connect));
   $('read-all').addEventListener('click', () => run(readEverything));
   $('copy-report').addEventListener('click', copyReport);
+  $('write-kick').addEventListener('click', () => run(writeKick));
+  $('write-cancel').addEventListener('click', () => { state.write.armed = null; render(); });
+  $('write-restore').addEventListener('click', () => run(restoreKick));
   $('port-use').addEventListener('click', () => run(async () => {
     await state.transport.connectTo(Number($('port-in').value), Number($('port-out').value));
     await afterConnect($('port-out').selectedOptions[0]?.textContent ?? 'MIDI device');

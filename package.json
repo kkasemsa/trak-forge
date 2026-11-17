@@ -1,6 +1,6 @@
 {
   "name": "trak-forge",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "private": true,
   "description": "TRAK FORGE: an iPad companion for the Yamaha SEQTRAK. Phase 1 is a read-only probe over USB MIDI.",
   "type": "module",

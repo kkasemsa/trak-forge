@@ -7,6 +7,7 @@ import { Link } from '../js/seqtrak/link.js';
 import { SimTransport } from '../js/seqtrak/sim.js';
 import { readSession, readPart, readPattern, readScenes, noteName } from '../js/seqtrak/probe.js';
 import { preset } from '../js/seqtrak/catalog.js';
+import { writeDrumPattern, readSteps, everyNth, DEFAULT_STEP, WriteRefused } from '../js/seqtrak/writer.js';
 
 let passed = 0;
 const test = async (name, fn) => { await fn(); passed++; console.log(`  ok  ${name}`); };
@@ -202,6 +203,69 @@ await test('concurrent reads are serialised and each gets its own answer', async
   assert.equal(from14(...a.data), 124);
   assert.deepEqual(b.data, [70]);
   assert.deepEqual(c.data, [0x49]);
+});
+
+// ---------- writer
+
+const stepsOf = snapshot => snapshot.map((s, i) => (s ? i : null)).filter(i => i !== null);
+
+await test('step add and delete frames match the documented bytes', async () => {
+  const t = new SimTransport();
+  const link = new Link(t, { ...fast, writePaceMs: 0 });
+  const wanted = await readSteps(link, 0, 16);
+  wanted[3] = { ...DEFAULT_STEP };
+  wanted[0] = null;
+  t.sent.length = 0;
+  await writeDrumPattern(link, 0, wanted);
+  const writes = t.sent.filter(f => (f[2] & 0xf0) === 0x10).map(hex);
+  assert.deepEqual(writes, [
+    'F0 43 10 7F 1C 0C 70 20 00 00 F7',                 // delete step 0
+    'F0 43 10 7F 1C 0C 70 00 00 03 3C 64 00 78 F7',     // add middle C on step 3 (documented frame)
+  ]);
+});
+
+await test('writing a drum pattern changes only the steps that differ and verifies', async () => {
+  const t = new SimTransport();
+  const link = new Link(t, { ...fast, writePaceMs: 0 });
+  const r = await writeDrumPattern(link, 1, everyNth(16, 4));      // SNARE had steps 4 and 12
+  assert.deepEqual(stepsOf(r.before), [4, 12]);
+  assert.deepEqual(stepsOf(r.after), [0, 4, 8, 12]);
+  assert.equal(r.changed, 2);
+  assert.equal(r.ok, true);
+  assert.equal(link.stats.writes, 2);
+  // Other parts untouched.
+  assert.deepEqual(stepsOf(await readSteps(link, 0, 16)), [0, 4, 8, 12]);
+  assert.deepEqual(stepsOf(await readSteps(link, 3, 16)), [2, 6, 10, 14]);
+});
+
+await test('restoring the snapshot puts the old pattern back, micro timing included', async () => {
+  const t = new SimTransport();
+  t.memory.set('112,67,2', [60, 90, 2, 45, 0, 100]);                // HAT 1 step 2: non-default step
+  const link = new Link(t, { ...fast, writePaceMs: 0 });
+  const first = await writeDrumPattern(link, 3, everyNth(16, 4));
+  const back = await writeDrumPattern(link, 3, first.before);
+  assert.equal(back.ok, true);
+  assert.deepEqual(back.after, first.before);
+  assert.deepEqual(back.after[2], { note: 60, velocity: 90, retrigger: 2, microTiming: 45, gate: 100 });
+});
+
+await test('a write the machine ignored is reported as a mismatch, not as success', async () => {
+  const link = new Link(new SimTransport({ writeDropRate: 1 }), { ...fast, writePaceMs: 0 });
+  const r = await writeDrumPattern(link, 1, everyNth(16, 4));
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.mismatches, [0, 8]);
+});
+
+await test('writing is refused while playing, on a non-drum track, or when the machine is silent', async () => {
+  const playing = new SimTransport();
+  playing.memory.set('1,16,32', [1]);
+  await assert.rejects(writeDrumPattern(new Link(playing, fast), 0, everyNth(16)), WriteRefused);
+  const t = new SimTransport();
+  await assert.rejects(writeDrumPattern(new Link(t, fast), 6, everyNth(16)), WriteRefused);   // PERC 2 is SYNTH-typed
+  await assert.rejects(writeDrumPattern(new Link(t, fast), 0, everyNth(8)), WriteRefused);    // wrong length
+  const silent = new SimTransport({ dropRate: 1 });
+  await assert.rejects(writeDrumPattern(new Link(silent, { ...fast, attempts: 2 }), 0, everyNth(16)), WriteRefused);
+  for (const tr of [playing, t, silent]) assert.equal(tr.sent.some(f => (f[2] & 0xf0) === 0x10), false, 'no write frame may be sent');
 });
 
 console.log(`${passed} tests passed`);

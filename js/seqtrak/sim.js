@@ -64,8 +64,33 @@ export function demoProject() {
 }
 
 export class SimTransport {
+  // The only writes the simulator understands: step record add / change / delete on parts 0-6.
+  applyWrite({ addr, data }) {
+    if (this.random() < this.writeDropRate) return;
+    const [ah, am, al] = addr;
+    if (ah !== 0x70) return;
+    const mode = am & 0xf0;
+    const part = am & 0x0f;
+    const at = step => key([0x70, 0x40 | part, step]);
+    if (mode === 0x00 && al === 0x00 && data.length === 5) {
+      const [step, note, velocity, gateMsb, gateLsb] = data;
+      this.memory.set(at(step), [note, velocity, 0, 60, gateMsb, gateLsb]);
+    } else if (mode === 0x20 && al === 0x00 && data.length === 1) {
+      this.memory.set(at(data[0]), []);
+    } else if (mode === 0x10 && data.length === 2) {
+      const cur = this.memory.get(at(data[0]));
+      if (!cur || cur.length < 6) return;
+      const next = [...cur];
+      if (al === 0x00) next[3] = data[1];
+      else if (al === 0x01) next[1] = data[1];
+      else if (al === 0x03) next[2] = data[1];
+      this.memory.set(at(data[0]), next);
+    }
+  }
+
   // dropRate: chance a request is silently lost. random: injectable for deterministic tests.
-  constructor({ memory = demoProject(), dropRate = 0, latencyMs = 0, random = Math.random } = {}) {
+  constructor({ memory = demoProject(), dropRate = 0, writeDropRate = 0, latencyMs = 0, random = Math.random } = {}) {
+    this.writeDropRate = writeDropRate;
     this.memory = memory;
     this.dropRate = dropRate;
     this.latencyMs = latencyMs;
@@ -93,7 +118,8 @@ export class SimTransport {
       return;
     }
     const msg = parse(bytes);
-    if (!msg || msg.kind !== 'request') return;        // the simulator accepts no writes
+    if (!msg) return;
+    if (msg.kind === 'change') { this.applyWrite(msg); return; }
     if (this.random() < this.dropRate) return;
     const data = this.memory.get(key(msg.addr));
     if (data === undefined) return;                    // unknown address: silence, like the hardware

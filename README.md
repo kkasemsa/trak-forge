@@ -17,17 +17,27 @@ Not affiliated with or endorsed by Yamaha. SEQTRAK is a Yamaha trademark.
 - Reads the scenes (which pattern each track plays, and mutes).
 - Shows the raw SysEx traffic, and copies everything it read as a text report.
 
-**It never writes.** The app only sends Parameter Requests and one Identity Request. A test
-(`the probe sends only read frames`) fails if any other kind of message is produced.
+**Reading never writes.** The probe only sends Parameter Requests and one Identity Request; a test
+(`the probe sends only read frames`) fails if it produces anything else.
+
+## Phase 2, first step: the write test
+
+The **Write test** card writes a kick on steps 1, 5, 9 and 13 of the KICK track, into the pattern
+selected on the SEQTRAK, in its current project. It is the only part of the app that changes the
+machine. It reads the pattern first, changes only the steps that differ, reads everything back and
+says whether the read-back matches. "Put the old pattern back" restores what was there. It refuses
+to write while the sequencer plays, or if the SEQTRAK does not answer every question about where
+the write would land. All writing code is in `js/seqtrak/writer.js`.
 
 ## Status: what is and is not verified
 
 | Part | State |
 |---|---|
-| Protocol code (framing, retries, decoding) | Tested against a simulator: `npm test`, 22 tests. Byte strings are checked against the worked examples in seqtrak-docs. |
+| Protocol code (framing, retries, decoding) | Tested against a simulator: `npm test`, 27 tests. Byte strings are checked against the worked examples in seqtrak-docs. |
 | Screens | Checked in a desktop browser in demo mode. |
-| Swift CoreMIDI plugin | Compiles: the `build` workflow on GitHub builds the app for the iOS Simulator. **Never run against a real SEQTRAK.** |
-| The whole app on an iPad with a SEQTRAK | **Not tested.** This is the first thing to do. |
+| Swift CoreMIDI plugin | Compiles: the `build` workflow on GitHub builds the app for the iOS Simulator. Runs on a real iPad since 0.1.2. |
+| Reading, on an iPad with a SEQTRAK (OS 2.0, USB-C) | Works (2026-11-17): 135 requests, 135 replies. Drum sound names and the mute flag are not resolved yet. |
+| Writing, on real hardware | **Not tested yet.** |
 
 ## First test on hardware
 
