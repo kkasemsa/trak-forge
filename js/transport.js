@@ -9,6 +9,14 @@ export const isNative = !!cap?.isNativePlatform?.();
 // Device names that mean "this is the SEQTRAK". The docs match on a substring of the port name.
 const NAME_MATCH = /seqtrak/i;
 
+// A native call that never answers must not freeze the screen: fail it with a clear message.
+function guard(promise, label, ms = 5000) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label}: no answer from the MIDI plugin after ${ms / 1000} s`)), ms)),
+  ]);
+}
+
 class NativeTransport {
   constructor(plugin) {
     this.plugin = plugin;
@@ -16,8 +24,8 @@ class NativeTransport {
   }
 
   async init(onSetupChanged) {
-    await this.plugin.addListener('sysex', ev => this.handlers.forEach(h => h(ev.data)));
-    await this.plugin.addListener('setupChanged', () => onSetupChanged?.());
+    await guard(this.plugin.addListener('sysex', ev => this.handlers.forEach(h => h(ev.data))), 'listen');
+    await guard(this.plugin.addListener('setupChanged', () => onSetupChanged?.()), 'listen');
   }
 
   onSysex(handler) {
@@ -26,23 +34,23 @@ class NativeTransport {
   }
 
   send(bytes) {
-    return this.plugin.send({ data: Array.from(bytes) });
+    return guard(this.plugin.send({ data: Array.from(bytes) }), 'send');
   }
 
   // Lists MIDI ports and connects to the SEQTRAK if exactly one input and one output match.
   async connect() {
-    const { sources, destinations } = await this.plugin.listEndpoints();
+    const { sources, destinations } = await guard(this.plugin.listEndpoints(), 'list ports');
     const ins = sources.filter(e => NAME_MATCH.test(e.name));
     const outs = destinations.filter(e => NAME_MATCH.test(e.name));
     if (ins.length === 0 || outs.length === 0) {
       return { connected: false, sources, destinations, reason: sources.length + destinations.length === 0 ? 'no-midi' : 'no-seqtrak' };
     }
-    await this.plugin.connect({ sourceId: ins[0].id, destinationId: outs[0].id });
+    await guard(this.plugin.connect({ sourceId: ins[0].id, destinationId: outs[0].id }), 'connect');
     return { connected: true, sources, destinations, name: outs[0].name };
   }
 
   async connectTo(sourceId, destinationId) {
-    await this.plugin.connect({ sourceId, destinationId });
+    await guard(this.plugin.connect({ sourceId, destinationId }), 'connect');
   }
 
   disconnect() {

@@ -35,6 +35,7 @@ const state = {
   patterns: new Array(PART_COUNT).fill(null),
   scenes: null,
   busy: false,
+  error: null,
   log: [],
 };
 
@@ -63,8 +64,12 @@ function renderStatus() {
     pill.className = 'pill ok';
     pill.textContent = state.deviceName || 'Connected';
   }
+  if (state.busy && !state.connected) { pill.className = 'pill'; pill.textContent = 'Working'; }
   const banner = $('banner');
-  if (!isNative) {
+  if (state.error) {
+    banner.className = 'banner warn';
+    banner.textContent = state.error;
+  } else if (!isNative) {
     banner.className = 'banner warn';
     banner.textContent = 'Demo mode. This is not a real SEQTRAK: every value below comes from a built-in simulator. Run the iPad app to read your machine.';
   } else {
@@ -72,6 +77,7 @@ function renderStatus() {
     banner.textContent = 'Read-only build. It asks the SEQTRAK for values and never changes anything on it.';
   }
   $('connect').textContent = state.connected ? 'Reconnect' : 'Connect';
+  $('connect').disabled = state.busy;
   $('read-all').disabled = !state.connected || state.busy;
   $('copy-report').disabled = !state.session;
 }
@@ -214,19 +220,13 @@ function progress(text, done, total) {
 async function run(action) {
   if (state.busy) return;
   state.busy = true;
+  state.error = null;
   render();
   try {
     await action();
   } catch (e) {
     console.error(e);
-    $('banner').className = 'banner warn';
-    $('banner').textContent = `Something went wrong: ${e?.message || e}`;
-    state.busy = false;
-    progress(null);
-    renderTracks();
-    renderLink();
-    $('read-all').disabled = !state.connected;
-    return;
+    state.error = `Something went wrong: ${e?.message || e}`;
   }
   state.busy = false;
   progress(null);
@@ -256,6 +256,10 @@ async function afterConnect(name) {
 }
 
 async function connect() {
+  if (!state.transport) {
+    // A MIDI device was plugged in or removed: if nothing is connected yet, try to connect.
+    state.transport = await createTransport(() => { if (!state.busy && !state.connected) run(connect); });
+  }
   const result = await state.transport.connect();
   if (!result.connected) {
     state.connected = false;
@@ -319,12 +323,15 @@ async function copyReport() {
 
 // ---------- start
 
+function fail(where, e) {
+  console.error(where, e);
+  state.error = `${where}: ${e?.message || e}`;
+  renderStatus();
+}
+
 async function start() {
   $('version').textContent = VERSION;
-  state.transport = await createTransport(() => {
-    // A MIDI device was plugged in or removed. If nothing is connected yet, try to connect.
-    if (!state.busy && !state.connected) run(connect);
-  });
+  // Buttons are wired before anything that can fail, so a startup problem is shown, not silent.
   $('connect').addEventListener('click', () => run(connect));
   $('read-all').addEventListener('click', () => run(readEverything));
   $('copy-report').addEventListener('click', copyReport);
@@ -332,6 +339,8 @@ async function start() {
     await state.transport.connectTo(Number($('port-in').value), Number($('port-out').value));
     await afterConnect($('port-out').selectedOptions[0]?.textContent ?? 'MIDI device');
   }));
+  window.addEventListener('error', ev => fail('Script error', ev.error || ev.message));
+  window.addEventListener('unhandledrejection', ev => fail('Error', ev.reason));
   render();
   await run(connect);
 }
