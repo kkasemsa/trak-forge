@@ -27,6 +27,10 @@ public class SeqtrakMidiPlugin: CAPPlugin, CAPBridgedPlugin {
         engine.onSetupChanged = { [weak self] in
             self?.notifyListeners("setupChanged", data: [:])
         }
+        // Create the MIDI client at launch, on the main thread, so hot-plugged devices are seen.
+        DispatchQueue.main.async { [weak self] in
+            try? self?.engine.start()
+        }
     }
 
     @objc func listEndpoints(_ call: CAPPluginCall) {

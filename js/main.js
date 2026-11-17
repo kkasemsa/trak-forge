@@ -237,9 +237,11 @@ function showPorts(result) {
   const box = $('ports');
   const hasPorts = result.sources.length + result.destinations.length > 0;
   box.hidden = false;
+  const names = [...new Set([...result.sources, ...result.destinations].map(e => e.name))].join(', ');
+  const checked = `Checked at ${new Date().toLocaleTimeString()}.`;
   $('ports-help').textContent = hasPorts
-    ? 'No port with "SEQTRAK" in its name was found. Pick the ports yourself if you recognise them.'
-    : 'The iPad sees no MIDI device. Check the USB-C cable carries data, and that the SEQTRAK is on.';
+    ? `${checked} No port with "SEQTRAK" in its name. The iPad sees: ${names}. "Network Session" is the iPad's own Wi-Fi MIDI port, not the SEQTRAK.`
+    : `${checked} The iPad sees no MIDI device. Check the USB-C cable carries data, and that the SEQTRAK is on.`;
   const fill = (select, list) => select.replaceChildren(...list.map(e => el('option', { value: e.id }, e.name)));
   fill($('port-in'), result.sources);
   fill($('port-out'), result.destinations);

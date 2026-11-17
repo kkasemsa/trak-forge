@@ -47,23 +47,32 @@ final class MidiEngine {
     // Sends run one at a time, off the main thread, so pacing sleeps never block the UI.
     private let sendQueue = DispatchQueue(label: "net.kktp.trakforge.midi.send")
 
+    /// Creates the CoreMIDI client. This must happen on the main thread: CoreMIDI delivers
+    /// device changes through the run loop of the thread that created the client, and a
+    /// background queue has none, so a device plugged in after launch would never appear.
     func start() throws {
         if started { return }
-        var status = MIDIClientCreateWithBlock("TrakForge" as CFString, &client) { [weak self] notification in
-            if notification.pointee.messageID == .msgSetupChanged {
-                self?.onSetupChanged?()
+        var failure: MidiError?
+        let create = {
+            if self.started { return }
+            var status = MIDIClientCreateWithBlock("TrakForge" as CFString, &self.client) { [weak self] notification in
+                if notification.pointee.messageID == .msgSetupChanged {
+                    self?.onSetupChanged?()
+                }
             }
-        }
-        guard status == noErr else { throw MidiError.coreMidi("MIDIClientCreate", status) }
+            guard status == noErr else { failure = .coreMidi("MIDIClientCreate", status); return }
 
-        status = MIDIInputPortCreateWithBlock(client, "TrakForge In" as CFString, &inPort) { [weak self] packetList, _ in
-            self?.receive(packetList)
-        }
-        guard status == noErr else { throw MidiError.coreMidi("MIDIInputPortCreate", status) }
+            status = MIDIInputPortCreateWithBlock(self.client, "TrakForge In" as CFString, &self.inPort) { [weak self] packetList, _ in
+                self?.receive(packetList)
+            }
+            guard status == noErr else { failure = .coreMidi("MIDIInputPortCreate", status); return }
 
-        status = MIDIOutputPortCreate(client, "TrakForge Out" as CFString, &outPort)
-        guard status == noErr else { throw MidiError.coreMidi("MIDIOutputPortCreate", status) }
-        started = true
+            status = MIDIOutputPortCreate(self.client, "TrakForge Out" as CFString, &self.outPort)
+            guard status == noErr else { failure = .coreMidi("MIDIOutputPortCreate", status); return }
+            self.started = true
+        }
+        if Thread.isMainThread { create() } else { DispatchQueue.main.sync(execute: create) }
+        if let failure = failure { throw failure }
     }
 
     // MARK: Ports
