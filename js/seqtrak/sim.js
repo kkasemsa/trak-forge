@@ -206,7 +206,9 @@ export class SimTransport {
     if (!msg) return;
     if (msg.kind === 'change') { this.applyWrite(msg); return; }
     if (this.random() < this.dropRate) return;
-    const data = this.memory.get(key(msg.addr));
+    let data = this.memory.get(key(msg.addr));
+    // An empty step answers with zero data bytes, on any step up to 128.
+    if (data === undefined && msg.addr[0] === 0x70 && (msg.addr[1] & 0xf0) === 0x40 && (msg.addr[1] & 0x0f) <= 6) data = [];
     if (data === undefined) return;                    // unknown address: silence, like the hardware
     this.emit(paramChange(msg.addr, data));
   }

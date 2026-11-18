@@ -20,6 +20,25 @@ Not affiliated with or endorsed by Yamaha. SEQTRAK is a Yamaha trademark.
 **Reading never writes.** The probe only sends Parameter Requests and one Identity Request; a test
 (`the probe sends only read frames`) fails if it produces anything else.
 
+## Phase 3: song starters
+
+The **Song starter** card picks one of the 119 MIDI FORGE starters and a seed, shows the song it
+builds (scenes x tracks, sounds, tempo, key), and writes it into the current project.
+
+How a FORGE song is fitted to the machine (`js/forge/song.js`):
+
+| FORGE | SEQTRAK |
+|---|---|
+| up to 7 melodic parts | 3 voices, chosen as Move mode does: bass on SYNTH 1, harmony on SYNTH 2, lead on DX |
+| one drum clip | split by instrument onto KICK, SNARE, CLAP, HAT 1, HAT 2, PERC 1, PERC 2 |
+| clips up to 64 bars | patterns of 8 bars (128 steps) at most |
+| one clip per section | at most 6 patterns per track: identical sections share one, and past 6 the most similar are folded together |
+| sections | one scene per section; a track that does not play is muted in that scene |
+| Drift patches | catalogue presets picked by role and name: a first guess, to tune by ear |
+
+`forge/engine.ts` is the MIDI FORGE Live 0.85.0 generator, unchanged; `npm run engine` compiles it
+to `js/forge/engine.js`. Same starter and seed always give the same song.
+
 ## Phase 2: the write tests
 
 The **Write tests** card is the only part of the app that changes the machine. Each test writes
@@ -52,7 +71,7 @@ mutes the unused tracks in every scene. It has no undo, and it does not save the
 
 | Part | State |
 |---|---|
-| Protocol code (framing, retries, decoding) | Tested against a simulator: `npm test`, 38 tests. Byte strings are checked against the worked examples in seqtrak-docs. |
+| Protocol code (framing, retries, decoding) | Tested against a simulator: `npm test`, 41 tests (every starter is built and checked against the machine's limits). Byte strings are checked against the worked examples in seqtrak-docs. |
 | Screens | Checked in a desktop browser in demo mode. |
 | Swift CoreMIDI plugin | Compiles: the `build` workflow on GitHub builds the app for the iOS Simulator. Runs on a real iPad since 0.1.2. |
 | Reading, on an iPad with a SEQTRAK (OS 2.0, USB-C) | Works (2026-11-17): 135 requests, 135 replies. Drum sound names and the mute flag are not resolved yet. |
@@ -60,6 +79,7 @@ mutes the unused tracks in every scene. It has no undo, and it does not save the
 | Writing synth notes, on real hardware | Works (2026-11-18): notes and timing confirmed by ear. |
 | Tempo and sound loading, on real hardware | Works (2026-11-18): all read-backs matched. |
 | Pattern slots, pattern length and scenes, on real hardware | **Not tested yet.** |
+| Song starters, on real hardware | **Not tested yet.** |
 
 ## First test on hardware
 
@@ -111,6 +131,9 @@ against a built-in simulator and says so on screen.
 | `js/seqtrak/sim.js` | simulated SEQTRAK for demo mode and tests |
 | `js/seqtrak/catalog.js`, `js/data/presets.js` | the 2,032 preset names (generated) |
 | `js/transport.js` | picks the native plugin on iPad, the simulator in a browser |
+| `forge/engine.ts`, `js/forge/engine.js` | the MIDI FORGE generator (source and compiled) |
+| `js/forge/song.js` | builds a starter's song and fits it to the SEQTRAK |
+| `js/seqtrak/writer.js` | everything that writes to the machine |
 | `js/main.js` | the screen |
 | `plugins/seqtrak-midi/` | local Capacitor plugin: CoreMIDI SysEx send and receive (Swift) |
 | `scripts/` | `build-app.mjs` (www/ + version), Mac setup helpers, icon and preset generators |

@@ -61,12 +61,19 @@ const clearStep = (link, part, step) => link.write([0x70, 0x20 | part, 0x00], [s
 // Makes a drum part's selected pattern equal to `wanted` (array of step contents or null),
 // touching only the steps that differ, then reads everything back.
 // Returns { target, before, after, changed, mismatches }.
-export async function writeDrumPattern(link, part, wanted, onProgress = () => {}) {
+// With { fresh: true } the pattern is cleared in one message instead of being read first: half the
+// traffic, no "before" to restore from. The read-back still covers every step, so a clear that did
+// not work shows up as a mismatch.
+export async function writeDrumPattern(link, part, wanted, onProgress = () => {}, { fresh = false } = {}) {
   const target = await readTarget(link, part);
   if (wanted.length !== target.steps) {
     throw new WriteRefused(`The pattern is ${target.steps} steps long but ${wanted.length} were supplied. Nothing was written.`);
   }
-  const before = await readSteps(link, part, target.steps, (d, t) => onProgress('Reading', d, t));
+  let before;
+  if (fresh) {
+    await link.write([0x01, 0x10 | part, 0x37], [target.pattern]);
+    before = new Array(target.steps).fill(null);
+  } else before = await readSteps(link, part, target.steps, (d, t) => onProgress('Reading', d, t));
   let changed = 0;
   for (let step = 0; step < target.steps; step++) {
     if (sameStep(before[step], wanted[step])) continue;
@@ -129,21 +136,21 @@ const sortedKeys = events => events.map(rollKey).sort();
 
 // Replaces a synth part's selected pattern with `wanted` (raw payloads): clears the pattern,
 // adds every event, then reads the list back and compares it as a set (the machine may reorder).
-export async function writeRoll(link, part, wanted, onProgress = () => {}) {
+export async function writeRoll(link, part, wanted, onProgress = () => {}, { fresh = false } = {}) {
   const target = await readRollTarget(link, part);
   const limit = target.steps * 120;
   for (const e of wanted) {
     if (e.length !== 8) throw new WriteRefused('An event is not 8 bytes. Nothing was written.');
     if (from14(e[0], e[1]) >= limit) throw new WriteRefused(`An event sits past the end of the ${target.steps}-step pattern. Nothing was written.`);
   }
-  const before = await readRoll(link, part, d => onProgress('Reading', d, null));
+  const before = fresh ? null : await readRoll(link, part, d => onProgress('Reading', d, null));
   const n = rollIndex(part);
 
   // Clear the selected pattern in one message, and make sure it really is empty before adding.
   await link.write([0x01, 0x10 | part, 0x37], [target.pattern]);
   const cleared = await readRoll(link, part);
   if (cleared.length !== 0) {
-    throw new WriteRefused(`The clear command left ${cleared.length} event(s) in place. Stopped before adding anything; the old pattern is ${cleared.length === before.length ? 'still there' : 'partly there'}.`);
+    throw new WriteRefused(`The clear command left ${cleared.length} event(s) in place. Stopped before adding anything.`);
   }
   for (let i = 0; i < wanted.length; i++) {
     await link.write([0x72, n << 4, 0x00], wanted[i]);
@@ -335,6 +342,7 @@ export async function writeSong(link, song, onProgress = () => {}) {
   const project = one(await link.read([0x01, 0x10, 0x15]));
   if (playing === null || project === null) throw new WriteRefused('The SEQTRAK did not answer. Nothing was written.');
   if (playing !== 0) throw new WriteRefused('The sequencer is playing. Stop it first. Nothing was written.');
+  const started = Date.now();
   const checks = [];
   const add = (label, ok, detail = '') => checks.push({ label, ok, detail });
   const total = song.tracks.length + 2;
@@ -352,16 +360,22 @@ export async function writeSong(link, song, onProgress = () => {}) {
       const isDrum = t.part <= 6;
       if (isDrum && one(await link.read([0x01, 0x10 | t.part, 0x3c])) !== 1) throw new WriteRefused('not a DRUM-type track');
       add(`${t.name}: sound #${t.sound}`, await loadSound(link, t.part, t.sound));
-      const vol = await ensureAudible(link, t.part);
-      if (vol.raised || !vol.ok) add(`${t.name}: volume was 0, raised to 100`, vol.ok);
+      if (t.volume === undefined) {
+        const vol = await ensureAudible(link, t.part);
+        if (vol.raised || !vol.ok) add(`${t.name}: volume was 0, raised to 100`, vol.ok);
+      }
       if (one(await link.read([0x30, 0x50 | t.part, 0x29])) !== 0) add(`${t.name}: unmuted`, await setByte(link, [0x30, 0x50 | t.part, 0x29], 0));
+      if (t.volume !== undefined) add(`${t.name}: volume ${t.volume}`, await setByte(link, [0x30, 0x50 | t.part, 0x00], t.volume));
       for (let slot = 0; slot < t.patterns.length; slot++) {
+        onProgress(`${t.name}, pattern ${slot + 1} of ${t.patterns.length}`, i + 1, total);
+        // A pattern is either a ready { steps, content } or a function of the song's step count.
+        const pat = typeof t.patterns[slot] === 'function' ? { steps: song.steps, content: t.patterns[slot](song.steps) } : t.patterns[slot];
+        const content = pat.content;
         await selectPattern(link, t.part, slot);
-        if (!(await setPatternLength(link, t.part, slot, song.steps))) throw new WriteRefused(`pattern ${slot + 1} length could not be set to ${song.steps}`);
-        const content = t.patterns[slot](song.steps);
-        const r = isDrum ? await writeDrumPattern(link, t.part, content) : await writeRoll(link, t.part, content);
+        if (!(await setPatternLength(link, t.part, slot, pat.steps))) throw new WriteRefused(`pattern ${slot + 1} length could not be set to ${pat.steps}`);
+        const r = isDrum ? await writeDrumPattern(link, t.part, content, undefined, { fresh: true }) : await writeRoll(link, t.part, content, undefined, { fresh: true });
         if (r.target.pattern !== slot) throw new WriteRefused(`the write landed in pattern ${r.target.pattern + 1}, not ${slot + 1}`);
-        add(`${t.name}: pattern ${slot + 1}`, r.ok, r.ok ? (isDrum ? `${content.filter(Boolean).length} hit(s)` : `${content.length} note(s)`) : 'read-back does not match');
+        add(`${t.name}: pattern ${slot + 1}, ${pat.steps} steps`, r.ok, r.ok ? (isDrum ? `${content.filter(Boolean).length} hit(s)` : `${content.length} note(s)`) : 'read-back does not match');
       }
       if (t.patterns.length > 1) await selectPattern(link, t.part, 0);
     } catch (e) {
@@ -380,7 +394,7 @@ export async function writeSong(link, song, onProgress = () => {}) {
   } catch (e) {
     add('Scenes: stopped', false, e?.message || String(e));
   }
-  return { project, checks, ok: checks.every(c => c.ok) };
+  return { project, checks, ok: checks.every(c => c.ok), seconds: Math.round((Date.now() - started) / 1000) };
 }
 
 // C minor, 124 BPM, four scenes that build: the same idea, more of it each time.

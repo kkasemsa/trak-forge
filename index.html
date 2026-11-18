@@ -40,6 +40,24 @@
   </section>
 
   <section class="card">
+    <h2>Song starter</h2>
+    <p class="dim">Builds a MIDI FORGE song and writes it into the current project: tempo, sounds, up to six patterns per track and one scene per section. It replaces ALL scenes of the project and the patterns and sounds of every track the song uses. No undo.</p>
+    <div class="row">
+      <label>Genre <select id="st-family"></select></label>
+      <label>Starter <select id="st-starter"></select></label>
+      <label>Seed <input id="st-seed" type="number" inputmode="numeric" min="1" max="999999"></label>
+      <button id="st-roll">New seed</button>
+    </div>
+    <p id="st-desc" class="dim"></p>
+    <div id="st-preview"></div>
+    <div class="row">
+      <button id="forge" class="primary" disabled>Write to SEQTRAK</button>
+      <button id="forge-cancel" hidden>Cancel</button>
+    </div>
+    <div id="forge-result"></div>
+  </section>
+
+  <section class="card">
     <h2>Write tests</h2>
     <p class="dim">Each test writes into the pattern selected on the SEQTRAK for that track, in its current project. It reads the pattern first, writes, then reads it back to check, and can put the old pattern back. Stop the sequencer first.</p>
     <div id="write-tests"></div>

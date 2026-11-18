@@ -5,6 +5,7 @@ import { Link } from './seqtrak/link.js';
 import { hex } from './seqtrak/sysex.js';
 import { readSession, readPart, readPattern, readScenes, PARTS, PART_COUNT, noteName } from './seqtrak/probe.js';
 import { preset } from './seqtrak/catalog.js';
+import { buildSong, listStarters, FAMILIES } from './forge/song.js';
 import { writeDrumPattern, readTarget, everyNth, writeRoll, readRollTarget, testBass, writeGroove, TEST_GROOVE, writeSong, TEST_SONG } from './seqtrak/writer.js';
 
 const $ = id => document.getElementById(id);
@@ -38,7 +39,8 @@ const state = {
   busy: false,
   error: null,
   tests: {},
-  bulk: { groove: { armed: null, result: null }, song: { armed: null, result: null } },
+  bulk: { forge: { armed: null, result: null }, groove: { armed: null, result: null }, song: { armed: null, result: null } },
+  forgeSong: null,
   log: [],
 };
 
@@ -77,7 +79,7 @@ function renderStatus() {
     banner.textContent = 'Demo mode. This is not a real SEQTRAK: every value below comes from a built-in simulator. Run the iPad app to read your machine.';
   } else {
     banner.className = 'banner';
-    banner.textContent = 'Reading changes nothing on the SEQTRAK. Only the Write tests, Groove test and Song test cards write to it.';
+    banner.textContent = 'Reading changes nothing on the SEQTRAK. Only the Song starter card and the three test cards write to it.';
   }
   $('connect').textContent = state.connected ? 'Reconnect' : 'Connect';
   $('connect').disabled = state.busy;
@@ -268,6 +270,7 @@ function renderWrite() {
 }
 
 const BULK = [
+  { id: 'forge', idle: 'Write to SEQTRAK', confirm: n => `Confirm: replace scenes, patterns and sounds in project ${n}`, write: (link, onProgress) => writeSong(link, state.forgeSong, onProgress), needs: () => !!state.forgeSong, primary: true },
   { id: 'groove', idle: 'Write groove', confirm: n => `Confirm: overwrite five tracks in project ${n}`, write: (link, onProgress) => writeGroove(link, TEST_GROOVE, onProgress) },
   { id: 'song', idle: 'Write song', confirm: n => `Confirm: replace scenes and five tracks in project ${n}`, write: (link, onProgress) => writeSong(link, TEST_SONG, onProgress) },
 ];
@@ -276,8 +279,8 @@ function renderBulk() {
   for (const card of BULK) {
     const g = state.bulk[card.id];
     const b = $(card.id);
-    b.disabled = !state.connected || state.busy;
-    b.className = g.armed !== null ? 'danger' : '';
+    b.disabled = !state.connected || state.busy || (card.needs ? !card.needs() : false);
+    b.className = g.armed !== null ? 'danger' : card.primary ? 'primary' : '';
     b.textContent = g.armed !== null ? card.confirm(g.armed + 1) : card.idle;
     $(`${card.id}-cancel`).hidden = g.armed === null;
     const box = $(`${card.id}-result`);
@@ -285,7 +288,7 @@ function renderBulk() {
     const r = g.result;
     if (!r) continue;
     box.append(el('div', { class: r.ok ? 'result ok' : 'result bad' },
-      el('b', {}, r.ok ? 'OK. ' : 'Not everything verified. '), `Project ${r.project + 1}.`),
+      el('b', {}, r.ok ? 'OK. ' : 'Not everything verified. '), `Project ${r.project + 1}.${r.seconds !== undefined ? ` Took ${r.seconds} s.` : ''}`),
       el('ul', { class: 'checks' }, r.checks.map(c => el('li', { class: c.ok ? 'yes' : 'no' }, c.label, c.detail ? el('small', {}, ` · ${c.detail}`) : null))));
   }
 }
@@ -408,6 +411,54 @@ async function runTest(test) {
   state.patterns[test.part] = null;
 }
 
+// ---------- song starter
+
+const STARTERS = listStarters();
+
+function rebuildSong() {
+  const id = $('st-starter').value;
+  const seed = Math.max(1, Math.min(999999, Number($('st-seed').value) || 1));
+  const meta = STARTERS.find(x => x.id === id);
+  $('st-desc').textContent = meta ? meta.desc : '';
+  const box = $('st-preview');
+  box.replaceChildren();
+  try {
+    state.forgeSong = buildSong(id, seed);
+  } catch (e) {
+    state.forgeSong = null;
+    box.append(el('div', { class: 'note' }, `This starter could not be built: ${e?.message || e}`));
+    return;
+  }
+  const song = state.forgeSong;
+  const v = song.voices;
+  box.append(el('div', { class: 'song-head' }, el('b', {}, song.name), ` · ${song.tempo} BPM · ${song.key} · SYNTH 1 = ${v.bass ?? 'none'}, SYNTH 2 = ${v.harmony ?? 'none'}, DX = ${v.lead ?? 'none'}`));
+  const head = el('tr', {}, el('th', {}, 'Scene'), song.tracks.map(t => el('th', {}, t.name)));
+  const rows = song.scenes.map((sc, i) => el('tr', {}, el('td', {}, `${i + 1} ${sc.name}`),
+    song.tracks.map(t => (t.part in sc.play ? el('td', { class: 'on' }, `P${sc.play[t.part] + 1}`) : el('td', { class: 'off' }, '-')))));
+  const sounds = el('tr', {}, el('td', {}, 'Sound'), song.tracks.map(t => el('td', {}, preset(t.sound)?.name ?? `#${t.sound}`)));
+  box.append(el('table', { class: 'scene-table' }, head, rows, sounds));
+  const events = song.tracks.reduce((a, t) => a + t.patterns.reduce((b, p) => b + (t.part <= 6 ? p.content.filter(Boolean).length : p.content.length), 0), 0);
+  const patterns = song.tracks.reduce((a, t) => a + t.patterns.length, 0);
+  box.append(el('p', { class: 'dim' }, `${song.scenes.length} scenes, ${patterns} patterns, ${events} notes. Patterns are 8 bars at most.${song.merged ? ` ${song.merged} section pattern(s) were folded into a similar one to fit six slots per track.` : ''} Sounds are a first guess by name: change them on the machine to taste.`));
+}
+
+function setupStarters() {
+  const fam = $('st-family');
+  fam.replaceChildren(el('option', { value: '' }, 'All'), ...FAMILIES.map(f => el('option', { value: f }, f)));
+  const fill = () => {
+    const list = STARTERS.filter(x => !fam.value || x.family === fam.value);
+    $('st-starter').replaceChildren(...list.map(x => el('option', { value: x.id }, `${x.name} (${x.bpm})`)));
+  };
+  const changed = () => { state.bulk.forge.armed = null; state.bulk.forge.result = null; rebuildSong(); render(); };
+  fam.addEventListener('change', () => { fill(); changed(); });
+  $('st-starter').addEventListener('change', changed);
+  $('st-seed').addEventListener('change', changed);
+  $('st-roll').addEventListener('click', () => { $('st-seed').value = String(1 + Math.floor(Math.random() * 999998)); changed(); });
+  $('st-seed').value = String(1 + Math.floor(Math.random() * 999998));
+  fill();
+  rebuildSong();
+}
+
 async function runBulk(card) {
   const g = state.bulk[card.id];
   const r = await state.link.read([0x01, 0x10, 0x15]);
@@ -448,6 +499,7 @@ function report() {
     patterns: state.patterns,
     groove: state.bulk.groove.result,
     song: state.bulk.song.result,
+    forge: state.forgeSong && { starter: state.forgeSong.starter, seed: state.forgeSong.seed, name: state.forgeSong.name, result: state.bulk.forge.result },
     writeTests: Object.fromEntries(Object.entries(state.tests).map(([id, w]) => [id, w.result])),
     scenes: state.scenes,
     stats: state.link?.stats ?? null,
@@ -491,6 +543,7 @@ async function start() {
     await state.transport.connectTo(Number($('port-in').value), Number($('port-out').value));
     await afterConnect($('port-out').selectedOptions[0]?.textContent ?? 'MIDI device');
   }));
+  setupStarters();
   window.addEventListener('error', ev => fail('Script error', ev.error || ev.message));
   window.addEventListener('unhandledrejection', ev => fail('Error', ev.reason));
   render();

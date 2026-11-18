@@ -92,3 +92,8 @@ button.danger { border-color: var(--warn); color: var(--warn); }
 .checks .yes::before { content: "OK  "; color: var(--ok); font-family: var(--mono); }
 .checks .no::before { content: "FAIL  "; color: var(--warn); font-family: var(--mono); }
 .checks small { color: var(--dim); }
+input[type=number] { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; width: 110px; }
+#st-desc { margin: 12px 0 0; }
+#st-preview { margin: 12px 0; overflow-x: auto; }
+.song-head { font-size: 15px; margin-bottom: 8px; }
+.song-head b { color: var(--amber); }

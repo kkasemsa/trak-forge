@@ -7,6 +7,7 @@ import { Link } from '../js/seqtrak/link.js';
 import { SimTransport } from '../js/seqtrak/sim.js';
 import { readSession, readPart, readPattern, readScenes, noteName } from '../js/seqtrak/probe.js';
 import { preset } from '../js/seqtrak/catalog.js';
+import { buildSong, listStarters } from '../js/forge/song.js';
 import { writeDrumPattern, readSteps, everyNth, DEFAULT_STEP, WriteRefused, writeRoll, readRoll, rollNote, testBass, loadSound, setTempo, ensureAudible, writeGroove, TEST_GROOVE, writeSong, TEST_SONG, selectPattern } from '../js/seqtrak/writer.js';
 
 let passed = 0;
@@ -397,6 +398,68 @@ await test('a scene write the machine ignored is reported', async () => {
   const r = await writeSong(new Link(t, { ...fast, writePaceMs: 0 }), TEST_SONG);
   assert.equal(r.ok, false);
   assert.match(r.checks.at(-1).detail, /scene\(s\) 2 do not read back/);
+});
+
+// ---------- FORGE songs
+
+await test('every starter builds a song that fits the SEQTRAK', async () => {
+  const starters = listStarters();
+  assert.ok(starters.length >= 100);
+  let mergedSongs = 0;
+  for (const st of starters) {
+    const song = buildSong(st.id, 4242);
+    assert.ok(song.scenes.length >= 1 && song.scenes.length <= 16, st.id);
+    assert.ok(song.tracks.length >= 1, `${st.id}: no tracks`);
+    assert.ok(song.tempo >= 40 && song.tempo <= 240, st.id);
+    for (const t of song.tracks) {
+      assert.ok(t.part >= 0 && t.part <= 9, st.id);
+      assert.ok(t.patterns.length >= 1 && t.patterns.length <= 6, `${st.id} ${t.name}: ${t.patterns.length} patterns`);
+      assert.ok(preset(t.sound), `${st.id} ${t.name}: sound ${t.sound}`);
+      assert.equal(preset(t.sound).engine, t.part <= 6 ? 'Drum' : t.part === 9 ? 'DX' : 'Synth', `${st.id} ${t.name}`);
+      for (const p of t.patterns) {
+        assert.ok(p.steps >= 16 && p.steps <= 128 && p.steps % 16 === 0, `${st.id} ${t.name}: ${p.steps} steps`);
+        if (t.part <= 6) {
+          assert.equal(p.content.length, p.steps);
+          for (const h of p.content) if (h) assert.ok(h.velocity >= 1 && h.velocity <= 127 && h.microTiming >= 0 && h.microTiming <= 119);
+        } else {
+          assert.ok(p.content.length > 0);
+          for (const e of p.content) {
+            assert.equal(e.length, 8);
+            assert.ok(e.every(b => Number.isInteger(b) && b >= 0 && b <= 127), `${st.id} ${t.name}: 7-bit`);
+            assert.ok(((e[0] << 7) | e[1]) < p.steps * 120, `${st.id} ${t.name}: event past the end`);
+          }
+        }
+      }
+    }
+    for (const sc of song.scenes) {
+      assert.ok(Object.keys(sc.play).length >= 1, `${st.id}: silent scene ${sc.name}`);
+      for (const [part, slot] of Object.entries(sc.play)) {
+        const t = song.tracks.find(x => x.part === Number(part));
+        assert.ok(t && slot < t.patterns.length, `${st.id}: scene points at a missing pattern`);
+      }
+    }
+    if (song.merged) mergedSongs++;
+  }
+  console.log(`      ${starters.length} starters; ${mergedSongs} needed patterns merged to fit 6 slots`);
+});
+
+await test('the same starter and seed give the same song; another seed gives another', async () => {
+  const a = JSON.stringify(buildSong('berlinCathedral', 7));
+  assert.equal(JSON.stringify(buildSong('berlinCathedral', 7)), a);
+  assert.notEqual(JSON.stringify(buildSong('berlinCathedral', 8)), a);
+});
+
+await test('a generated song writes to the simulated SEQTRAK and every read-back matches', async () => {
+  const song = buildSong(listStarters().find(s => s.family === 'Detroit').id, 99);
+  const t = new SimTransport();
+  const link = new Link(t, { ...fast, writePaceMs: 0 });
+  const r = await writeSong(link, song);
+  assert.equal(r.ok, true, JSON.stringify(r.checks.filter(c => !c.ok)));
+  const { scenes } = await readScenes(link);
+  assert.equal(scenes.length, song.scenes.length);
+  assert.equal(two14(t.memory.get('48,64,118')), song.tempo);
+  const bass = song.tracks.find(x => x.part === 7);
+  if (bass) assert.equal((await readRoll(link, 7)).length, bass.patterns[0].content.length);
 });
 
 console.log(`${passed} tests passed`);
