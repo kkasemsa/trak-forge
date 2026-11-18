@@ -82,7 +82,6 @@ function renderStatus() {
   $('connect').textContent = state.connected ? 'Reconnect' : 'Connect';
   $('connect').disabled = state.busy;
   $('read-all').disabled = !state.connected || state.busy;
-  $('copy-report').disabled = !state.session;
 }
 
 function renderSession() {
