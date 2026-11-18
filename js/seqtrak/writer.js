@@ -268,3 +268,142 @@ export async function writeGroove(link, groove, onProgress = () => {}) {
   }
   return { project, checks, ok: checks.every(c => c.ok) };
 }
+
+// ---------- a whole song: several patterns per track, and scenes
+
+const ALL_PARTS = 11;
+const MAX_SCENES = 16;
+
+// Selects pattern slot `slot` (0-5) on a part and proves it took. Slots 3-5 are only reachable
+// with Pattern Select Mode 1; without it the machine silently stays on slot 2, and a write aimed
+// at slot 3 would destroy slot 2. So: never continue on a mismatch.
+export async function selectPattern(link, part, slot) {
+  await link.write([0x30, 0x50 | part, 0x0f], [slot]);
+  const now = one(await link.read([0x30, 0x50 | part, 0x0f]));
+  if (now !== slot) throw new WriteRefused(`Pattern ${slot + 1} could not be selected (the machine says ${now === null ? 'nothing' : now + 1}). Stopped before writing into the wrong pattern.`);
+}
+
+export async function setPatternLength(link, part, slot, steps) {
+  const addr = [0x30, 0x50 | part, 0x16 + 2 * slot];
+  await link.write(addr, to14(steps));
+  return two(await link.read(addr)) === steps;
+}
+
+async function setByte(link, addr, value) {
+  await link.write(addr, [value]);
+  return one(await link.read(addr)) === value;
+}
+
+async function readScene(link, scene) {
+  const r = await link.read([0x71, 0x40, scene]);
+  if (!r.ok) throw new WriteRefused(`Scene ${scene + 1} did not answer. Stopped.`);
+  if (r.data.length < 25) return null;
+  return { patterns: r.data.slice(2, 13), mutes: r.data.slice(14, 25) };
+}
+
+// Makes the project's scenes equal to `scenes` ([{ patterns: [11], mutes: [11 of 0/1] }]):
+// creates missing ones, sets every track's pattern and mute, removes scenes past the end.
+export async function writeScenes(link, scenes, onProgress = () => {}) {
+  for (let s = 0; s < scenes.length; s++) {
+    onProgress(s + 1, scenes.length);
+    if (!(await readScene(link, s))) await link.write([0x71, 0x00, 0x00], [s]);
+    for (let p = 0; p < ALL_PARTS; p++) {
+      await link.write([0x71, 0x10 | p, 0x01], [s, scenes[s].patterns[p]]);
+      await link.write([0x71, 0x10 | p, 0x02], [s, scenes[s].mutes[p]]);
+    }
+  }
+  for (let s = MAX_SCENES - 1; s >= scenes.length; s--) {
+    if (await readScene(link, s)) await link.write([0x71, 0x20, 0x00], [s]);
+  }
+  const wrong = [];
+  for (let s = 0; s < MAX_SCENES; s++) {
+    const got = await readScene(link, s);
+    const want = scenes[s] ?? null;
+    const same = (!got && !want) || (!!got && !!want
+      && want.patterns.every((v, i) => v === got.patterns[i]) && want.mutes.every((v, i) => v === got.mutes[i]));
+    if (!same) wrong.push(s);
+  }
+  return wrong;
+}
+
+// song = { tempo, steps, tracks: [{ part, name, sound, patterns: [fn(steps) -> content, ...] }],
+//          scenes: [{ name, play: { <part>: <slot> } }] }
+// A track plays in a scene only if the scene lists it; every other track is muted there, so
+// whatever an unused track still holds stays silent.
+export async function writeSong(link, song, onProgress = () => {}) {
+  const playing = one(await link.read([0x01, 0x10, 0x20]));
+  const project = one(await link.read([0x01, 0x10, 0x15]));
+  if (playing === null || project === null) throw new WriteRefused('The SEQTRAK did not answer. Nothing was written.');
+  if (playing !== 0) throw new WriteRefused('The sequencer is playing. Stop it first. Nothing was written.');
+  const checks = [];
+  const add = (label, ok, detail = '') => checks.push({ label, ok, detail });
+  const total = song.tracks.length + 2;
+
+  onProgress('Settings', 0, total);
+  // Without this, pattern slots 4-6 are unreachable. If it does not take, stop: nothing written yet.
+  if (!(await setByte(link, [0x30, 0x40, 0x79], 1))) throw new WriteRefused('Pattern Select Mode could not be set. Nothing else was written.');
+  add('All six pattern slots reachable', true);
+  add(`Tempo ${song.tempo} BPM`, await setTempo(link, song.tempo));
+
+  for (let i = 0; i < song.tracks.length; i++) {
+    const t = song.tracks[i];
+    onProgress(t.name, i + 1, total);
+    try {
+      const isDrum = t.part <= 6;
+      if (isDrum && one(await link.read([0x01, 0x10 | t.part, 0x3c])) !== 1) throw new WriteRefused('not a DRUM-type track');
+      add(`${t.name}: sound #${t.sound}`, await loadSound(link, t.part, t.sound));
+      const vol = await ensureAudible(link, t.part);
+      if (vol.raised || !vol.ok) add(`${t.name}: volume was 0, raised to 100`, vol.ok);
+      if (one(await link.read([0x30, 0x50 | t.part, 0x29])) !== 0) add(`${t.name}: unmuted`, await setByte(link, [0x30, 0x50 | t.part, 0x29], 0));
+      for (let slot = 0; slot < t.patterns.length; slot++) {
+        await selectPattern(link, t.part, slot);
+        if (!(await setPatternLength(link, t.part, slot, song.steps))) throw new WriteRefused(`pattern ${slot + 1} length could not be set to ${song.steps}`);
+        const content = t.patterns[slot](song.steps);
+        const r = isDrum ? await writeDrumPattern(link, t.part, content) : await writeRoll(link, t.part, content);
+        if (r.target.pattern !== slot) throw new WriteRefused(`the write landed in pattern ${r.target.pattern + 1}, not ${slot + 1}`);
+        add(`${t.name}: pattern ${slot + 1}`, r.ok, r.ok ? (isDrum ? `${content.filter(Boolean).length} hit(s)` : `${content.length} note(s)`) : 'read-back does not match');
+      }
+      if (t.patterns.length > 1) await selectPattern(link, t.part, 0);
+    } catch (e) {
+      add(`${t.name}: stopped`, false, e?.message || String(e));
+    }
+  }
+
+  onProgress('Scenes', total - 1, total);
+  try {
+    const scenes = song.scenes.map(sc => ({
+      patterns: Array.from({ length: ALL_PARTS }, (_, p) => sc.play[p] ?? 0),
+      mutes: Array.from({ length: ALL_PARTS }, (_, p) => (p in sc.play ? 0 : 1)),
+    }));
+    const wrong = await writeScenes(link, scenes);
+    add(`${scenes.length} scenes: ${song.scenes.map(s => s.name).join(', ')}`, wrong.length === 0, wrong.length ? `scene(s) ${wrong.map(s => s + 1).join(', ')} do not read back as written` : 'other scenes removed');
+  } catch (e) {
+    add('Scenes: stopped', false, e?.message || String(e));
+  }
+  return { project, checks, ok: checks.every(c => c.ok) };
+}
+
+// C minor, 124 BPM, four scenes that build: the same idea, more of it each time.
+export const TEST_SONG = {
+  tempo: 124,
+  steps: 16,
+  tracks: [
+    { part: 0, name: 'KICK', sound: 1, patterns: [s => hits(s, [0, 4, 8, 12])] },
+    { part: 1, name: 'SNARE', sound: 113, patterns: [s => hits(s, [4, 12])] },
+    { part: 3, name: 'HAT 1', sound: 312, patterns: [s => hits(s, [2, 6, 10, 14]), s => hits(s, [0, 2, 4, 6, 8, 10, 12, 14, 15])] },
+    { part: 7, name: 'SYNTH 1', sound: 908, patterns: [
+      s => perBar(s, b => [rollNote(b + 0, 36), rollNote(b + 3, 36), rollNote(b + 6, 36), rollNote(b + 10, 39), rollNote(b + 12, 36), rollNote(b + 14, 43)]),
+      s => perBar(s, b => [rollNote(b + 0, 36), rollNote(b + 3, 36), rollNote(b + 6, 48), rollNote(b + 8, 36), rollNote(b + 10, 44), rollNote(b + 12, 43), rollNote(b + 14, 46)]),
+    ] },
+    { part: 8, name: 'SYNTH 2', sound: 996, patterns: [
+      s => perBar(s, b => [...chord(b + 2, [60, 63, 67], { velocity: 90 }), ...chord(b + 9, [60, 63, 67], { velocity: 80 })]),
+      s => perBar(s, b => [...chord(b + 2, [60, 63, 67], { velocity: 90 }), ...chord(b + 6, [56, 60, 63], { velocity: 85 }), ...chord(b + 11, [58, 62, 65], { velocity: 85 })]),
+    ] },
+  ],
+  scenes: [
+    { name: 'Intro', play: { 0: 0, 7: 0 } },
+    { name: 'Groove', play: { 0: 0, 1: 0, 3: 0, 7: 0 } },
+    { name: 'Full', play: { 0: 0, 1: 0, 3: 0, 7: 0, 8: 0 } },
+    { name: 'Lift', play: { 0: 0, 1: 0, 3: 1, 7: 1, 8: 1 } },
+  ],
+};

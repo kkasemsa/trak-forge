@@ -83,6 +83,35 @@ export class SimTransport {
     }
   }
 
+  // Pattern slots: the live addresses always show the selected slot, so selecting another one
+  // parks the current contents and brings the other slot's in. Slots 3-5 need mode 1, as on hardware.
+  selectPattern(p, slot) {
+    const mode = (this.memory.get(key([0x30, 0x40, 0x79])) || [0])[0];
+    if (slot > 2 && mode !== 1) slot = 2;
+    const cur = (this.memory.get(key([0x30, 0x50 | p, 0x0f])) || [0])[0];
+    if (slot === cur) return;
+    this.slots ??= {};
+    const park = { steps: [], roll: p >= 7 ? this.rollList((p - 7) << 4) : [] };
+    for (let st = 0; st < 128; st++) park.steps.push(this.memory.get(key([0x70, 0x40 | p, st])) || []);
+    this.slots[`${p}:${cur}`] = park;
+    const next = this.slots[`${p}:${slot}`] || { steps: [], roll: [] };
+    for (let st = 0; st < 128; st++) this.memory.set(key([0x70, 0x40 | p, st]), next.steps[st] || []);
+    if (p >= 7) this.setRollList((p - 7) << 4, next.roll);
+    this.memory.set(key([0x30, 0x50 | p, 0x0f]), [slot]);
+  }
+
+  applyScene(am, al, data) {
+    const at = s => key([0x71, 0x40, s]);
+    const exists = s => (this.memory.get(at(s)) || []).length >= 25;
+    if (am === 0x00 && al === 0x00 && data.length === 1) { if (!exists(data[0])) this.memory.set(at(data[0]), new Array(33).fill(0)); return; }
+    if (am === 0x20 && al === 0x00 && data.length === 1) { this.memory.set(at(data[0]), []); return; }
+    if ((am & 0xf0) === 0x10 && (al === 0x01 || al === 0x02) && data.length === 2 && exists(data[0])) {
+      const d = [...this.memory.get(at(data[0]))];
+      d[(al === 0x01 ? 2 : 14) + (am & 0x0f)] = data[1];
+      this.memory.set(at(data[0]), d);
+    }
+  }
+
   rollList(base) {
     const list = [];
     for (let i = 0; i < 2048; i++) {
@@ -115,12 +144,14 @@ export class SimTransport {
     if (ah === 0x01 && (am & 0xf0) === 0x10 && al === 0x37 && data.length === 1) {   // clear pattern
       const p = am & 0x0f;
       const selected = (this.memory.get(key([0x30, 0x50 | p, 0x0f])) || [0])[0];
-      if (data[0] !== selected) return;                 // the simulator only models the selected pattern
+      if (data[0] !== selected) { (this.slots ??= {})[`${p}:${data[0]}`] = { steps: [], roll: [] }; return; }
       if (p >= 7) this.setRollList((p - 7) << 4, []);
       else for (let st = 0; st < 128; st++) this.memory.set(key([0x70, 0x40 | p, st]), []);
       return;
     }
-    if (ah === 0x30 && data.length >= 1) { this.memory.set(key(addr), [...data]); return; }   // tempo, volume
+    if (ah === 0x30 && (am & 0xf0) === 0x50 && al === 0x0f && data.length === 1) { this.selectPattern(am & 0x0f, data[0]); return; }
+    if (ah === 0x30 && data.length >= 1) { this.memory.set(key(addr), [...data]); return; }   // tempo, volume, lengths
+    if (ah === 0x71) { this.applyScene(am, al, data); return; }
     if (ah !== 0x70) return;
     const mode = am & 0xf0;
     const part = am & 0x0f;

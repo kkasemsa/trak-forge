@@ -5,7 +5,7 @@ import { Link } from './seqtrak/link.js';
 import { hex } from './seqtrak/sysex.js';
 import { readSession, readPart, readPattern, readScenes, PARTS, PART_COUNT, noteName } from './seqtrak/probe.js';
 import { preset } from './seqtrak/catalog.js';
-import { writeDrumPattern, readTarget, everyNth, writeRoll, readRollTarget, testBass, writeGroove, TEST_GROOVE } from './seqtrak/writer.js';
+import { writeDrumPattern, readTarget, everyNth, writeRoll, readRollTarget, testBass, writeGroove, TEST_GROOVE, writeSong, TEST_SONG } from './seqtrak/writer.js';
 
 const $ = id => document.getElementById(id);
 
@@ -38,7 +38,7 @@ const state = {
   busy: false,
   error: null,
   tests: {},
-  groove: { armed: null, result: null },
+  bulk: { groove: { armed: null, result: null }, song: { armed: null, result: null } },
   log: [],
 };
 
@@ -77,7 +77,7 @@ function renderStatus() {
     banner.textContent = 'Demo mode. This is not a real SEQTRAK: every value below comes from a built-in simulator. Run the iPad app to read your machine.';
   } else {
     banner.className = 'banner';
-    banner.textContent = 'Reading changes nothing on the SEQTRAK. Only the Write tests and Groove test cards write to it.';
+    banner.textContent = 'Reading changes nothing on the SEQTRAK. Only the Write tests, Groove test and Song test cards write to it.';
   }
   $('connect').textContent = state.connected ? 'Reconnect' : 'Connect';
   $('connect').disabled = state.busy;
@@ -139,7 +139,7 @@ function renderTracks() {
   box.replaceChildren();
   for (let p = 0; p < PART_COUNT; p++) {
     const part = state.parts[p];
-    const row = el('div', { class: 'track' });
+    const row = el('div', { class: part?.muted ? 'track muted' : 'track' });
     if (!part) {
       row.append(el('div', { class: 'track-head' }, el('div', { class: 'track-name' }, PARTS[p]), el('div', { class: 'tag' }, '-'), el('div', { class: 'dim' }, 'Not read yet.')));
       box.append(row);
@@ -155,6 +155,7 @@ function renderTracks() {
       part.pattern === null ? 'pattern ?' : `pattern ${part.pattern + 1}`,
       part.steps === null ? '? steps' : `${part.steps} steps`,
       part.volume === null ? 'vol ?' : `vol ${part.volume}`,
+      part.muted ? 'muted' : null,
     ].filter(Boolean).join(' · ');
     row.append(el('div', { class: 'track-head' },
       el('div', { class: 'track-name' }, part.name),
@@ -266,25 +267,32 @@ function renderWrite() {
   }
 }
 
-function renderGroove() {
-  const g = state.groove;
-  const b = $('groove');
-  b.disabled = !state.connected || state.busy;
-  b.className = g.armed !== null ? 'danger' : '';
-  b.textContent = g.armed !== null ? `Confirm: overwrite five tracks in project ${g.armed + 1}` : 'Write groove';
-  $('groove-cancel').hidden = g.armed === null;
-  const box = $('groove-result');
-  box.replaceChildren();
-  if (!g.result) return;
-  const r = g.result;
-  box.append(el('div', { class: r.ok ? 'result ok' : 'result bad' },
-    el('b', {}, r.ok ? 'OK. ' : 'Not everything verified. '), `Project ${r.project + 1}.`),
-    el('ul', { class: 'checks' }, r.checks.map(c => el('li', { class: c.ok ? 'yes' : 'no' }, c.label, c.detail ? el('small', {}, ` · ${c.detail}`) : null))));
+const BULK = [
+  { id: 'groove', idle: 'Write groove', confirm: n => `Confirm: overwrite five tracks in project ${n}`, write: (link, onProgress) => writeGroove(link, TEST_GROOVE, onProgress) },
+  { id: 'song', idle: 'Write song', confirm: n => `Confirm: replace scenes and five tracks in project ${n}`, write: (link, onProgress) => writeSong(link, TEST_SONG, onProgress) },
+];
+
+function renderBulk() {
+  for (const card of BULK) {
+    const g = state.bulk[card.id];
+    const b = $(card.id);
+    b.disabled = !state.connected || state.busy;
+    b.className = g.armed !== null ? 'danger' : '';
+    b.textContent = g.armed !== null ? card.confirm(g.armed + 1) : card.idle;
+    $(`${card.id}-cancel`).hidden = g.armed === null;
+    const box = $(`${card.id}-result`);
+    box.replaceChildren();
+    const r = g.result;
+    if (!r) continue;
+    box.append(el('div', { class: r.ok ? 'result ok' : 'result bad' },
+      el('b', {}, r.ok ? 'OK. ' : 'Not everything verified. '), `Project ${r.project + 1}.`),
+      el('ul', { class: 'checks' }, r.checks.map(c => el('li', { class: c.ok ? 'yes' : 'no' }, c.label, c.detail ? el('small', {}, ` · ${c.detail}`) : null))));
+  }
 }
 
 function render() {
   renderWrite();
-  renderGroove();
+  renderBulk();
   renderStatus();
   renderSession();
   renderTracks();
@@ -313,7 +321,7 @@ async function run(action) {
     console.error(e);
     state.error = e?.name === 'WriteRefused' || /Nothing was written/.test(e?.message || '') ? e.message : `Something went wrong: ${e?.message || e}`;
     for (const w of Object.values(state.tests)) w.armed = null;
-    state.groove.armed = null;
+    for (const g of Object.values(state.bulk)) g.armed = null;
   }
   state.busy = false;
   progress(null);
@@ -400,8 +408,8 @@ async function runTest(test) {
   state.patterns[test.part] = null;
 }
 
-async function runGroove() {
-  const g = state.groove;
+async function runBulk(card) {
+  const g = state.bulk[card.id];
   const r = await state.link.read([0x01, 0x10, 0x15]);
   const project = r.ok && r.data.length ? r.data[0] : null;
   if (project === null) throw new Error('The SEQTRAK did not say which project is current. Nothing was written.');
@@ -409,9 +417,10 @@ async function runGroove() {
   const armed = g.armed;
   g.armed = null;
   if (project !== armed) throw new Error('The project changed on the SEQTRAK since you pressed the button. Nothing was written.');
-  g.result = await writeGroove(state.link, TEST_GROOVE, (label, d, t) => progress(`Groove: ${label}`, d, t));
+  g.result = await card.write(state.link, (label, d, t) => progress(`${card.idle}: ${label}`, d, t));
   state.patterns.fill(null);
   state.parts.fill(null);
+  state.scenes = null;
 }
 
 async function restoreTest(test) {
@@ -437,7 +446,8 @@ function report() {
     session: state.session,
     parts: state.parts.map(p => p && { ...p, sound: preset(p.soundNumber)?.name ?? null }),
     patterns: state.patterns,
-    groove: state.groove.result,
+    groove: state.bulk.groove.result,
+    song: state.bulk.song.result,
     writeTests: Object.fromEntries(Object.entries(state.tests).map(([id, w]) => [id, w.result])),
     scenes: state.scenes,
     stats: state.link?.stats ?? null,
@@ -473,8 +483,10 @@ async function start() {
   $('connect').addEventListener('click', () => run(connect));
   $('read-all').addEventListener('click', () => run(readEverything));
   $('copy-report').addEventListener('click', copyReport);
-  $('groove').addEventListener('click', () => run(runGroove));
-  $('groove-cancel').addEventListener('click', () => { state.groove.armed = null; render(); });
+  for (const card of BULK) {
+    $(card.id).addEventListener('click', () => run(() => runBulk(card)));
+    $(`${card.id}-cancel`).addEventListener('click', () => { state.bulk[card.id].armed = null; render(); });
+  }
   $('port-use').addEventListener('click', () => run(async () => {
     await state.transport.connectTo(Number($('port-in').value), Number($('port-out').value));
     await afterConnect($('port-out').selectedOptions[0]?.textContent ?? 'MIDI device');

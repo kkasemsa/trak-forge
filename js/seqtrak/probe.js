@@ -49,7 +49,7 @@ export async function readPart(link, part) {
   const pattern = one(await link.read([0x30, track, 0x0f]));
   const steps = pattern === null ? null : two(await link.read([0x30, track, 0x16 + 2 * pattern]));
   const volume = one(await link.read([0x30, track, 0x00]));
-  // Mute encoding (0 = off, 125 = on) is from the Yamaha Data List, not yet hardware-verified.
+  // Track mute: 0 = off, 125 = on. Matches what the user muted by hand on a real unit (2026-11-18).
   const muteRaw = one(await link.read([0x30, track, 0x29]));
   return {
     part,

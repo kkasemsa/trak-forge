@@ -7,7 +7,7 @@ import { Link } from '../js/seqtrak/link.js';
 import { SimTransport } from '../js/seqtrak/sim.js';
 import { readSession, readPart, readPattern, readScenes, noteName } from '../js/seqtrak/probe.js';
 import { preset } from '../js/seqtrak/catalog.js';
-import { writeDrumPattern, readSteps, everyNth, DEFAULT_STEP, WriteRefused, writeRoll, readRoll, rollNote, testBass, loadSound, setTempo, ensureAudible, writeGroove, TEST_GROOVE } from '../js/seqtrak/writer.js';
+import { writeDrumPattern, readSteps, everyNth, DEFAULT_STEP, WriteRefused, writeRoll, readRoll, rollNote, testBass, loadSound, setTempo, ensureAudible, writeGroove, TEST_GROOVE, writeSong, TEST_SONG, selectPattern } from '../js/seqtrak/writer.js';
 
 let passed = 0;
 const test = async (name, fn) => { await fn(); passed++; console.log(`  ok  ${name}`); };
@@ -358,6 +358,45 @@ await test('one failing track is reported and does not stop the others', async (
   assert.equal(r.ok, false);
   assert.deepEqual(r.checks.filter(c => !c.ok).map(c => c.label), ['SNARE: stopped']);
   assert.equal(r.checks.filter(c => c.ok).length, 10);   // tempo, 4 tracks x (sound + pattern), and the SNARE sound
+});
+
+// ---------- song
+
+await test('pattern slots 4-6 are refused unless the mode allows them', async () => {
+  const t = new SimTransport();
+  const link = new Link(t, { ...fast, writePaceMs: 0 });
+  await selectPattern(link, 0, 2);
+  await assert.rejects(selectPattern(link, 0, 4), /could not be selected/);       // mode 0: machine stays on 3
+  t.memory.set('48,64,121', [1]);
+  await selectPattern(link, 0, 4);
+});
+
+await test('the test song writes patterns into separate slots and builds four scenes', async () => {
+  const t = new SimTransport();
+  const link = new Link(t, { ...fast, writePaceMs: 0 });
+  const r = await writeSong(link, TEST_SONG);
+  assert.equal(r.ok, true, JSON.stringify(r.checks.filter(c => !c.ok)));
+  // HAT 1: slot 1 and slot 2 hold different patterns, and slot 1 is selected again at the end.
+  assert.deepEqual(stepsOf(await readSteps(link, 3, 16)), [2, 6, 10, 14]);
+  await selectPattern(link, 3, 1);
+  assert.deepEqual(stepsOf(await readSteps(link, 3, 16)), [0, 2, 4, 6, 8, 10, 12, 14, 15]);
+  await selectPattern(link, 8, 1);
+  assert.equal((await readRoll(link, 8)).length, 9);
+  assert.equal(two14(t.memory.get('48,87,22')), 16);                              // SYNTH 1 pattern 1 length
+  const { scenes } = await readScenes(link);
+  assert.equal(scenes.length, 4);
+  assert.deepEqual(scenes[0].mutes.map(Number), [0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1]);   // Intro: kick + bass
+  assert.deepEqual(scenes[3].patterns, [0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0]);            // Lift: second patterns
+  assert.deepEqual(scenes[2].mutes.map(Number), [0, 0, 1, 0, 1, 1, 1, 0, 0, 1, 1]);
+});
+
+await test('a scene write the machine ignored is reported', async () => {
+  const t = new SimTransport();
+  const real = t.applyScene.bind(t);
+  t.applyScene = (am, al, data) => { if (!(al === 0x02 && data[0] === 1)) real(am, al, data); };   // scene 2 mutes ignored
+  const r = await writeSong(new Link(t, { ...fast, writePaceMs: 0 }), TEST_SONG);
+  assert.equal(r.ok, false);
+  assert.match(r.checks.at(-1).detail, /scene\(s\) 2 do not read back/);
 });
 
 console.log(`${passed} tests passed`);
