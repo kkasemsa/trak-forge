@@ -5,7 +5,7 @@ import { Link } from './seqtrak/link.js';
 import { hex } from './seqtrak/sysex.js';
 import { readSession, readPart, readPattern, readScenes, PARTS, PART_COUNT, noteName } from './seqtrak/probe.js';
 import { preset } from './seqtrak/catalog.js';
-import { writeDrumPattern, readTarget, everyNth, writeRoll, readRollTarget, testBass } from './seqtrak/writer.js';
+import { writeDrumPattern, readTarget, everyNth, writeRoll, readRollTarget, testBass, writeGroove, TEST_GROOVE } from './seqtrak/writer.js';
 
 const $ = id => document.getElementById(id);
 
@@ -38,6 +38,7 @@ const state = {
   busy: false,
   error: null,
   tests: {},
+  groove: { armed: null, result: null },
   log: [],
 };
 
@@ -76,7 +77,7 @@ function renderStatus() {
     banner.textContent = 'Demo mode. This is not a real SEQTRAK: every value below comes from a built-in simulator. Run the iPad app to read your machine.';
   } else {
     banner.className = 'banner';
-    banner.textContent = 'Reading changes nothing on the SEQTRAK. Only the Write tests card writes to it.';
+    banner.textContent = 'Reading changes nothing on the SEQTRAK. Only the Write tests and Groove test cards write to it.';
   }
   $('connect').textContent = state.connected ? 'Reconnect' : 'Connect';
   $('connect').disabled = state.busy;
@@ -266,8 +267,25 @@ function renderWrite() {
   }
 }
 
+function renderGroove() {
+  const g = state.groove;
+  const b = $('groove');
+  b.disabled = !state.connected || state.busy;
+  b.className = g.armed !== null ? 'danger' : '';
+  b.textContent = g.armed !== null ? `Confirm: overwrite five tracks in project ${g.armed + 1}` : 'Write groove';
+  $('groove-cancel').hidden = g.armed === null;
+  const box = $('groove-result');
+  box.replaceChildren();
+  if (!g.result) return;
+  const r = g.result;
+  box.append(el('div', { class: r.ok ? 'result ok' : 'result bad' },
+    el('b', {}, r.ok ? 'OK. ' : 'Not everything verified. '), `Project ${r.project + 1}.`),
+    el('ul', { class: 'checks' }, r.checks.map(c => el('li', { class: c.ok ? 'yes' : 'no' }, c.label, c.detail ? el('small', {}, ` · ${c.detail}`) : null))));
+}
+
 function render() {
   renderWrite();
+  renderGroove();
   renderStatus();
   renderSession();
   renderTracks();
@@ -296,6 +314,7 @@ async function run(action) {
     console.error(e);
     state.error = e?.name === 'WriteRefused' || /Nothing was written/.test(e?.message || '') ? e.message : `Something went wrong: ${e?.message || e}`;
     for (const w of Object.values(state.tests)) w.armed = null;
+    state.groove.armed = null;
   }
   state.busy = false;
   progress(null);
@@ -382,6 +401,20 @@ async function runTest(test) {
   state.patterns[test.part] = null;
 }
 
+async function runGroove() {
+  const g = state.groove;
+  const r = await state.link.read([0x01, 0x10, 0x15]);
+  const project = r.ok && r.data.length ? r.data[0] : null;
+  if (project === null) throw new Error('The SEQTRAK did not say which project is current. Nothing was written.');
+  if (g.armed === null) { g.armed = project; return; }
+  const armed = g.armed;
+  g.armed = null;
+  if (project !== armed) throw new Error('The project changed on the SEQTRAK since you pressed the button. Nothing was written.');
+  g.result = await writeGroove(state.link, TEST_GROOVE, (label, d, t) => progress(`Groove: ${label}`, d, t));
+  state.patterns.fill(null);
+  state.parts.fill(null);
+}
+
 async function restoreTest(test) {
   const w = testState(test.id);
   const saved = w.snapshot.target;
@@ -405,6 +438,7 @@ function report() {
     session: state.session,
     parts: state.parts.map(p => p && { ...p, sound: preset(p.soundNumber)?.name ?? null }),
     patterns: state.patterns,
+    groove: state.groove.result,
     writeTests: Object.fromEntries(Object.entries(state.tests).map(([id, w]) => [id, w.result])),
     scenes: state.scenes,
     stats: state.link?.stats ?? null,
@@ -440,6 +474,8 @@ async function start() {
   $('connect').addEventListener('click', () => run(connect));
   $('read-all').addEventListener('click', () => run(readEverything));
   $('copy-report').addEventListener('click', copyReport);
+  $('groove').addEventListener('click', () => run(runGroove));
+  $('groove-cancel').addEventListener('click', () => { state.groove.armed = null; render(); });
   $('port-use').addEventListener('click', () => run(async () => {
     await state.transport.connectTo(Number($('port-in').value), Number($('port-out').value));
     await afterConnect($('port-out').selectedOptions[0]?.textContent ?? 'MIDI device');

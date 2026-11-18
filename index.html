@@ -45,6 +45,16 @@
   </section>
 
   <section class="card">
+    <h2>Groove test</h2>
+    <p class="dim">Writes a whole one-pattern groove into the current project: tempo 124, sounds and patterns on KICK, SNARE, HAT 1, SYNTH 1 (bass) and SYNTH 2 (chord stab), in C minor. It overwrites the selected pattern of those five tracks and changes their sounds. There is no undo for this one.</p>
+    <div class="row">
+      <button id="groove" disabled>Write groove</button>
+      <button id="groove-cancel" hidden>Cancel</button>
+    </div>
+    <div id="groove-result"></div>
+  </section>
+
+  <section class="card">
     <h2>Tracks</h2>
     <p class="dim">Notes are read from the pattern currently selected on each track.</p>
     <div id="tracks"></div>

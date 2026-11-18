@@ -7,11 +7,12 @@ import { Link } from '../js/seqtrak/link.js';
 import { SimTransport } from '../js/seqtrak/sim.js';
 import { readSession, readPart, readPattern, readScenes, noteName } from '../js/seqtrak/probe.js';
 import { preset } from '../js/seqtrak/catalog.js';
-import { writeDrumPattern, readSteps, everyNth, DEFAULT_STEP, WriteRefused, writeRoll, readRoll, rollNote, testBass } from '../js/seqtrak/writer.js';
+import { writeDrumPattern, readSteps, everyNth, DEFAULT_STEP, WriteRefused, writeRoll, readRoll, rollNote, testBass, loadSound, setTempo, ensureAudible, writeGroove, TEST_GROOVE } from '../js/seqtrak/writer.js';
 
 let passed = 0;
 const test = async (name, fn) => { await fn(); passed++; console.log(`  ok  ${name}`); };
 const bytes = s => s.split(' ').map(h => parseInt(h, 16));
+const two14 = d => from14(d[0], d[1]);
 
 // Deterministic random so the drop tests always drop the same requests.
 function seeded(seed) {
@@ -309,6 +310,54 @@ await test('synth writing stops if the clear did not work, and refuses bad input
   await assert.rejects(writeRoll(l2, 7, [rollNote(16, 36)]), WriteRefused);   // past the end of 16 steps
   await assert.rejects(writeRoll(l2, 3, testBass(16)), WriteRefused);         // a drum part
   assert.equal(t.sent.some(f => (f[2] & 0xf0) === 0x10), false);
+});
+
+// ---------- sounds, tempo, groove
+
+await test('loading a sound sends Bank Select MSB, LSB and Program Change on the part channel', async () => {
+  const t = new SimTransport();
+  const link = new Link(t, { ...fast, writePaceMs: 0 });
+  assert.equal(await loadSound(link, 7, 858, { waitMs: 0 }), true);          // documented example: Acid3 on SYNTH 1
+  assert.deepEqual(t.sent.filter(f => f[0] < 0xf0).map(hex), ['B7 00 3F', 'B7 20 06', 'C7 59']);
+  assert.equal(preset((await readPart(link, 7)).soundNumber).name, 'Acid3');
+});
+
+await test('a sound that did not load is reported, not assumed', async () => {
+  const link = new Link(new SimTransport({ writeDropRate: 1 }), { ...fast, writePaceMs: 0 });
+  assert.equal(await loadSound(link, 7, 858, { waitMs: 0, tries: 2 }), false);
+  assert.equal(await setTempo(link, 99), false);
+});
+
+await test('track volume is raised only when it is 0', async () => {
+  const t = new SimTransport();
+  t.memory.set('48,87,0', [0]);
+  const link = new Link(t, { ...fast, writePaceMs: 0 });
+  assert.deepEqual(await ensureAudible(link, 7), { ok: true, raised: true });
+  assert.deepEqual(await ensureAudible(link, 8), { ok: true, raised: false });
+  assert.equal(link.stats.writes, 1);
+});
+
+await test('the test groove writes five tracks into a 64-step and 16-step project and verifies each', async () => {
+  const t = new SimTransport();
+  t.memory.set('48,87,22', to14(64));                                        // SYNTH 1 pattern is 64 steps
+  const link = new Link(t, { ...fast, writePaceMs: 0 });
+  const r = await writeGroove(link, TEST_GROOVE);
+  assert.equal(r.ok, true, JSON.stringify(r.checks.filter(c => !c.ok)));
+  assert.equal(two14(t.memory.get('48,64,118')), 124);
+  assert.equal((await readRoll(link, 7)).length, 24);                        // 6 notes x 4 bars
+  assert.equal((await readRoll(link, 8)).length, 6);                         // 2 chords x 3 notes, one bar
+  assert.deepEqual(stepsOf(await readSteps(link, 3, 16)), [2, 6, 10, 14]);
+  assert.equal(preset((await readPart(link, 8)).soundNumber).name, 'Detroit Stab');
+  assert.deepEqual(stepsOf(await readSteps(link, 2, 16)), [12], 'CLAP is not part of the groove');
+});
+
+await test('one failing track is reported and does not stop the others', async () => {
+  const t = new SimTransport();
+  t.memory.set('1,17,60', [2]);                                              // SNARE re-typed to SYNTH
+  const r = await writeGroove(new Link(t, { ...fast, writePaceMs: 0 }), TEST_GROOVE);
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.checks.filter(c => !c.ok).map(c => c.label), ['SNARE: stopped']);
+  assert.equal(r.checks.filter(c => c.ok).length, 10);   // tempo, 4 tracks x (sound + pattern), and the SNARE sound
 });
 
 console.log(`${passed} tests passed`);

@@ -75,6 +75,19 @@ export class Link {
     return result;
   }
 
+  // Sends one non-SysEx MIDI message (Bank Select, Program Change). Same queue, same pacing.
+  sendRaw(bytes) {
+    const run = async () => {
+      this.log?.('out', bytes);
+      await this.transport.send(bytes);
+      this.stats.writes++;
+      await sleep(this.writePaceMs);
+    };
+    const result = this.queue.then(run, run);
+    this.queue = result.catch(() => {});
+    return result;
+  }
+
   // Universal Identity Request. Changes nothing on the device; the cheapest "is it there" check.
   //   -> F0 7E 7F 06 01 F7
   //   <- F0 7E 7F 06 02 43 00 41 64 06 mm 00 00 7F F7     OS version = 1.0 + mm / 10

@@ -64,6 +64,25 @@ export function demoProject() {
 }
 
 export class SimTransport {
+  // Bank Select MSB/LSB then Program Change loads a sound. The bank is not latched: a Program
+  // Change with no fresh Bank Select pair is ignored, as on the hardware.
+  applyChannel(bytes) {
+    if (this.random() < this.writeDropRate) return;
+    const status = bytes[0] & 0xf0;
+    const part = bytes[0] & 0x0f;
+    this.bank ??= {};
+    const b = (this.bank[part] ??= {});
+    if (status === 0xb0 && bytes[1] === 0x00) b.msb = bytes[2];
+    else if (status === 0xb0 && bytes[1] === 0x20) b.lsb = bytes[2];
+    else if (status === 0xc0) {
+      if (b.msb === 63 && b.lsb !== undefined && part <= 9) {
+        const n = b.lsb * 128 + bytes[1];
+        this.memory.set(key([0x01, 0x10 | part, 0x33]), [(n >> 7) & 0x7f, n & 0x7f]);
+      }
+      this.bank[part] = {};
+    }
+  }
+
   rollList(base) {
     const list = [];
     for (let i = 0; i < 2048; i++) {
@@ -101,6 +120,7 @@ export class SimTransport {
       else for (let st = 0; st < 128; st++) this.memory.set(key([0x70, 0x40 | p, st]), []);
       return;
     }
+    if (ah === 0x30 && data.length >= 1) { this.memory.set(key(addr), [...data]); return; }   // tempo, volume
     if (ah !== 0x70) return;
     const mode = am & 0xf0;
     const part = am & 0x0f;
@@ -150,6 +170,7 @@ export class SimTransport {
       }
       return;
     }
+    if (bytes[0] < 0xf0) { this.applyChannel(bytes); return; }
     const msg = parse(bytes);
     if (!msg) return;
     if (msg.kind === 'change') { this.applyWrite(msg); return; }

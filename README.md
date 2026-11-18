@@ -34,16 +34,24 @@ matches. "Put the old pattern back" restores what was there. They refuse to writ
 sequencer plays, or if the SEQTRAK does not answer every question about where the write would
 land. All writing code is in `js/seqtrak/writer.js`.
 
+### The groove test
+
+The **Groove test** card writes a whole one-pattern groove into the current project: tempo 124,
+then a sound and a pattern on KICK, SNARE, HAT 1, SYNTH 1 (bass) and SYNTH 2 (chord stab), in
+C minor. Sounds are loaded with Bank Select + Program Change and checked by reading the loaded
+sound back. Every step is listed with OK or FAIL. It has no undo.
+
 ## Status: what is and is not verified
 
 | Part | State |
 |---|---|
-| Protocol code (framing, retries, decoding) | Tested against a simulator: `npm test`, 30 tests. Byte strings are checked against the worked examples in seqtrak-docs. |
+| Protocol code (framing, retries, decoding) | Tested against a simulator: `npm test`, 35 tests. Byte strings are checked against the worked examples in seqtrak-docs. |
 | Screens | Checked in a desktop browser in demo mode. |
 | Swift CoreMIDI plugin | Compiles: the `build` workflow on GitHub builds the app for the iOS Simulator. Runs on a real iPad since 0.1.2. |
 | Reading, on an iPad with a SEQTRAK (OS 2.0, USB-C) | Works (2026-11-17): 135 requests, 135 replies. Drum sound names and the mute flag are not resolved yet. |
 | Writing drum steps, on real hardware | Works (2026-11-18): read-back verified. |
-| Writing synth notes, on real hardware | **Not tested yet.** |
+| Writing synth notes, on real hardware | Works (2026-11-18): notes and timing confirmed by ear. |
+| Tempo and sound loading, on real hardware | **Not tested yet.** |
 
 ## First test on hardware
 

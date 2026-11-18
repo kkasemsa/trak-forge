@@ -175,3 +175,96 @@ export function testBass(steps) {
   }
   return out;
 }
+
+// ---------- project settings and sounds
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+export async function setTempo(link, bpm) {
+  await link.write([0x30, 0x40, 0x76], to14(bpm));
+  return two(await link.read([0x30, 0x40, 0x76])) === bpm;
+}
+
+// Loads a catalogue sound (1-2032) onto a part: Bank Select MSB 63, LSB, Program Change on the
+// part's MIDI channel, all three every time (the bank is not latched). Verified by reading
+// CurrentSound back; loading can take a moment, so the read is retried.
+export async function loadSound(link, part, number, { waitMs = 150, tries = 6 } = {}) {
+  const index = number - 1;
+  await link.sendRaw([0xb0 | part, 0x00, 63]);
+  await link.sendRaw([0xb0 | part, 0x20, index >> 7]);
+  await link.sendRaw([0xc0 | part, index & 0x7f]);
+  for (let i = 0; i < tries; i++) {
+    if (two(await link.read([0x01, 0x10 | part, 0x33])) === index) return true;
+    await sleep(waitMs);
+  }
+  return false;
+}
+
+// A track volume of 0 silences a track whatever its pattern holds (seen on hardware after a
+// project slot is reused). Raise it only when it is 0; any other level is the user's own mix.
+export async function ensureAudible(link, part, level = 100) {
+  const now = one(await link.read([0x30, 0x50 | part, 0x00]));
+  if (now === null) return { ok: false, raised: false };
+  if (now !== 0) return { ok: true, raised: false };
+  await link.write([0x30, 0x50 | part, 0x00], [level]);
+  return { ok: one(await link.read([0x30, 0x50 | part, 0x00])) === level, raised: true };
+}
+
+// ---------- a whole one-pattern groove
+
+const chord = (step, notes, opts) => notes.map(n => rollNote(step, n, opts));
+const perBar = (steps, fn) => { const out = []; for (let bar = 0; bar * 16 < steps; bar++) out.push(...fn(bar * 16).filter(e => ((e[0] << 7) | e[1]) < steps * 120)); return out; };
+const hits = (steps, list) => Array.from({ length: steps }, (_, i) => (list.includes(i % 16) ? { ...DEFAULT_STEP } : null));
+
+// C minor, 124 BPM: four-on-the-floor, clap-style snare on 2 and 4, off-beat hats, a sine bass
+// and an off-beat chord stab. Sounds are catalogue numbers.
+export const TEST_GROOVE = {
+  tempo: 124,
+  tracks: [
+    { part: 0, name: 'KICK', sound: 1, drum: steps => hits(steps, [0, 4, 8, 12]) },
+    { part: 1, name: 'SNARE', sound: 113, drum: steps => hits(steps, [4, 12]) },
+    { part: 3, name: 'HAT 1', sound: 312, drum: steps => hits(steps, [2, 6, 10, 14]) },
+    { part: 7, name: 'SYNTH 1', sound: 908, roll: steps => perBar(steps, b => [
+      rollNote(b + 0, 36), rollNote(b + 3, 36), rollNote(b + 6, 36), rollNote(b + 10, 39), rollNote(b + 12, 36), rollNote(b + 14, 43),
+    ]) },
+    { part: 8, name: 'SYNTH 2', sound: 996, roll: steps => perBar(steps, b => [
+      ...chord(b + 2, [60, 63, 67], { velocity: 90 }), ...chord(b + 9, [60, 63, 67], { velocity: 80 }),
+    ]) },
+  ],
+};
+
+// Writes a groove into the selected patterns of the current project. Returns a list of checks,
+// one line per thing attempted; a failed track does not stop the others.
+export async function writeGroove(link, groove, onProgress = () => {}) {
+  const playing = one(await link.read([0x01, 0x10, 0x20]));
+  const project = one(await link.read([0x01, 0x10, 0x15]));
+  if (playing === null || project === null) throw new WriteRefused('The SEQTRAK did not answer. Nothing was written.');
+  if (playing !== 0) throw new WriteRefused('The sequencer is playing. Stop it first. Nothing was written.');
+  const checks = [];
+  const add = (label, ok, detail = '') => checks.push({ label, ok, detail });
+
+  onProgress('Tempo', 0, groove.tracks.length + 1);
+  add(`Tempo ${groove.tempo} BPM`, await setTempo(link, groove.tempo));
+
+  for (let i = 0; i < groove.tracks.length; i++) {
+    const t = groove.tracks[i];
+    onProgress(t.name, i + 1, groove.tracks.length + 1);
+    try {
+      add(`${t.name}: sound #${t.sound}`, await loadSound(link, t.part, t.sound));
+      const vol = await ensureAudible(link, t.part);
+      if (vol.raised || !vol.ok) add(`${t.name}: volume was 0, raised to 100`, vol.ok);
+      if (t.drum) {
+        const target = await readTarget(link, t.part);
+        const r = await writeDrumPattern(link, t.part, t.drum(target.steps));
+        add(`${t.name}: pattern ${r.target.pattern + 1}, ${r.target.steps} steps`, r.ok, r.ok ? `${r.changed} step(s) changed` : 'read-back does not match');
+      } else {
+        const target = await readRollTarget(link, t.part);
+        const r = await writeRoll(link, t.part, t.roll(target.steps));
+        add(`${t.name}: pattern ${r.target.pattern + 1}, ${r.target.steps} steps`, r.ok, r.ok ? `${r.changed} note(s) written` : `read-back does not match (${r.missing} missing, ${r.extra} unexpected)`);
+      }
+    } catch (e) {
+      add(`${t.name}: stopped`, false, e?.message || String(e));
+    }
+  }
+  return { project, checks, ok: checks.every(c => c.ok) };
+}
