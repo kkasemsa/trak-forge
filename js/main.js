@@ -5,7 +5,7 @@ import { Link } from './seqtrak/link.js';
 import { hex } from './seqtrak/sysex.js';
 import { readSession, readPart, readPattern, readScenes, PARTS, PART_COUNT, noteName } from './seqtrak/probe.js';
 import { preset } from './seqtrak/catalog.js';
-import { writeDrumPattern, readTarget, everyNth } from './seqtrak/writer.js';
+import { writeDrumPattern, readTarget, everyNth, writeRoll, readRollTarget, testBass } from './seqtrak/writer.js';
 
 const $ = id => document.getElementById(id);
 
@@ -37,7 +37,7 @@ const state = {
   scenes: null,
   busy: false,
   error: null,
-  write: { armed: null, result: null, snapshot: null, restored: false },
+  tests: {},
   log: [],
 };
 
@@ -76,7 +76,7 @@ function renderStatus() {
     banner.textContent = 'Demo mode. This is not a real SEQTRAK: every value below comes from a built-in simulator. Run the iPad app to read your machine.';
   } else {
     banner.className = 'banner';
-    banner.textContent = 'Reading changes nothing on the SEQTRAK. Only the Write test card writes to it.';
+    banner.textContent = 'Reading changes nothing on the SEQTRAK. Only the Write tests card writes to it.';
   }
   $('connect').textContent = state.connected ? 'Reconnect' : 'Connect';
   $('connect').disabled = state.busy;
@@ -200,35 +200,70 @@ function renderLink() {
   log.scrollTop = log.scrollHeight;
 }
 
-function stepGrid(snapshot) {
-  return el('div', { class: 'grid' }, snapshot.map((st, i) =>
-    el('div', { class: ['cell', i % 4 === 0 ? 'beat' : '', st ? 'hit' : ''].filter(Boolean).join(' ') }, i + 1)));
+// The write tests. `cells(snapshot, steps)` turns a read-back into one label per step (null = empty).
+const TESTS = [
+  {
+    id: 'kick', track: 'KICK', part: 0,
+    title: 'Kick on steps 1, 5, 9, 13',
+    target: link => readTarget(link, 0),
+    wanted: steps => everyNth(steps, 4),
+    write: (link, wanted, onProgress) => writeDrumPattern(link, 0, wanted, onProgress),
+    cells: (snap, steps) => Array.from({ length: steps }, (_, i) => (snap[i] ? String(i + 1) : null)),
+  },
+  {
+    id: 'bass', track: 'SYNTH 1', part: 7,
+    title: 'Bass: C1 on every beat (with the kick), G1 on step 15 of each bar',
+    target: link => readRollTarget(link, 7),
+    wanted: steps => testBass(steps),
+    write: (link, wanted, onProgress) => writeRoll(link, 7, wanted, onProgress),
+    cells: (snap, steps) => {
+      const out = new Array(steps).fill(null);
+      for (const e of snap) {
+        if (e[2] !== 0) continue;
+        const st = Math.floor(((e[0] << 7) | e[1]) / 120);
+        if (st < steps) out[st] = out[st] ? `${out[st]} ${noteName(e[3])}` : noteName(e[3]);
+      }
+      return out;
+    },
+  },
+];
+const testState = id => (state.tests[id] ??= { armed: null, result: null, snapshot: null, restored: false });
+
+function cellGrid(labels) {
+  return el('div', { class: 'grid' }, labels.map((label, i) =>
+    el('div', { class: ['cell', i % 4 === 0 ? 'beat' : '', label ? 'hit' : ''].filter(Boolean).join(' ') }, label ?? i + 1)));
 }
 
 function renderWrite() {
-  const w = state.write;
-  const kick = $('write-kick');
-  kick.disabled = !state.connected || state.busy;
-  kick.className = w.armed ? 'danger' : '';
-  kick.textContent = w.armed
-    ? `Confirm: overwrite KICK, pattern ${w.armed.pattern + 1}, project ${w.armed.project + 1}`
-    : 'Write test kick';
-  $('write-cancel').hidden = !w.armed;
-  $('write-restore').disabled = !state.connected || state.busy || !w.snapshot;
-  const box = $('write-result');
+  const box = $('write-tests');
   box.replaceChildren();
-  const r = w.result;
-  if (!r) return;
-  const where = `KICK, pattern ${r.target.pattern + 1}, project ${r.target.project + 1}`;
-  const verdict = r.ok
-    ? `${w.restored ? 'Old pattern restored' : 'Written and verified'}: ${where}. ${r.changed} step(s) changed.`
-    : r.moved
-      ? `The project or pattern changed on the SEQTRAK during the write (${where}). Check the machine.`
-      : `Read-back does not match on step(s) ${r.mismatches.map(i => i + 1).join(', ')} (${where}).`;
-  box.className = r.ok ? 'result ok' : 'result bad';
-  box.append(el('b', {}, r.ok ? 'OK. ' : 'Not verified. '), verdict,
-    el('div', { class: 'label' }, 'Before'), stepGrid(r.before),
-    el('div', { class: 'label' }, 'After (read back from the SEQTRAK)'), stepGrid(r.after));
+  for (const test of TESTS) {
+    const w = testState(test.id);
+    const off = !state.connected || state.busy;
+    const row = el('div', { class: 'track' },
+      el('p', {}, el('b', {}, `${test.track}. `), test.title),
+      el('div', { class: 'row' },
+        el('button', { class: w.armed ? 'danger' : '', disabled: off, onclick: () => run(() => runTest(test)) },
+          w.armed ? `Confirm: overwrite ${test.track}, pattern ${w.armed.pattern + 1}, project ${w.armed.project + 1}` : 'Write'),
+        w.armed ? el('button', { onclick: () => { w.armed = null; render(); } }, 'Cancel') : null,
+        el('button', { disabled: off || !w.snapshot, onclick: () => run(() => restoreTest(test)) }, 'Put the old pattern back'),
+      ));
+    const r = w.result;
+    if (r) {
+      const where = `${test.track}, pattern ${r.target.pattern + 1}, project ${r.target.project + 1}`;
+      const problem = r.moved
+        ? `The project or pattern changed on the SEQTRAK during the write (${where}). Check the machine.`
+        : r.mismatches
+          ? `Read-back does not match on step(s) ${r.mismatches.map(i => i + 1).join(', ')} (${where}).`
+          : `Read-back does not match (${where}): ${r.missing} event(s) missing, ${r.extra} unexpected.`;
+      const verdict = r.ok ? `${w.restored ? 'Old pattern restored' : 'Written and verified'}: ${where}. ${r.changed} ${r.mismatches ? 'step(s) changed' : 'event(s) written'}.` : problem;
+      row.append(el('div', { class: r.ok ? 'result ok' : 'result bad' },
+        el('b', {}, r.ok ? 'OK. ' : 'Not verified. '), verdict,
+        el('div', { class: 'label' }, 'Before'), cellGrid(test.cells(r.before, r.target.steps)),
+        el('div', { class: 'label' }, 'After (read back from the SEQTRAK)'), cellGrid(test.cells(r.after, r.target.steps))));
+    }
+    box.append(row);
+  }
 }
 
 function render() {
@@ -260,7 +295,7 @@ async function run(action) {
   } catch (e) {
     console.error(e);
     state.error = e?.name === 'WriteRefused' || /Nothing was written/.test(e?.message || '') ? e.message : `Something went wrong: ${e?.message || e}`;
-    state.write.armed = null;
+    for (const w of Object.values(state.tests)) w.armed = null;
   }
   state.busy = false;
   progress(null);
@@ -328,35 +363,36 @@ async function readEverything() {
 }
 
 // First press reads where the write would land and arms the button; second press writes.
-async function writeKick() {
-  const w = state.write;
+async function runTest(test) {
+  const w = testState(test.id);
   if (!w.armed) {
-    w.armed = await readTarget(state.link, 0);
+    w.armed = await test.target(state.link);
     return;
   }
   const armed = w.armed;
   w.armed = null;
-  const now = await readTarget(state.link, 0);
+  const now = await test.target(state.link);
   if (now.project !== armed.project || now.pattern !== armed.pattern) {
     throw new Error('The project or pattern changed on the SEQTRAK since you pressed the button. Nothing was written.');
   }
-  const r = await writeDrumPattern(state.link, 0, everyNth(now.steps, 4), (label, d, t) => progress(`${label} step ${d} of ${t}`, d, t));
+  const r = await test.write(state.link, test.wanted(now.steps), (label, d, t) => progress(`${test.track}: ${label} ${d}${t ? ` of ${t}` : ''}`, d, t));
   w.result = r;
   w.restored = false;
-  if (!w.snapshot) w.snapshot = { target: r.target, steps: r.before };   // keep the ORIGINAL pattern
-  state.patterns[0] = null;
+  if (!w.snapshot) w.snapshot = { target: r.target, content: r.before };   // keep the ORIGINAL pattern
+  state.patterns[test.part] = null;
 }
 
-async function restoreKick() {
-  const w = state.write;
-  const now = await readTarget(state.link, 0);
-  if (now.project !== w.snapshot.target.project || now.pattern !== w.snapshot.target.pattern) {
-    throw new Error(`The saved pattern belongs to project ${w.snapshot.target.project + 1}, pattern ${w.snapshot.target.pattern + 1}. Select that on the SEQTRAK first. Nothing was written.`);
+async function restoreTest(test) {
+  const w = testState(test.id);
+  const saved = w.snapshot.target;
+  const now = await test.target(state.link);
+  if (now.project !== saved.project || now.pattern !== saved.pattern) {
+    throw new Error(`The saved pattern belongs to project ${saved.project + 1}, pattern ${saved.pattern + 1}. Select that on the SEQTRAK first. Nothing was written.`);
   }
-  w.result = await writeDrumPattern(state.link, 0, w.snapshot.steps, (label, d, t) => progress(`${label} step ${d} of ${t}`, d, t));
+  w.result = await test.write(state.link, w.snapshot.content, (label, d, t) => progress(`${test.track}: ${label} ${d}${t ? ` of ${t}` : ''}`, d, t));
   w.restored = true;
   if (w.result.ok) w.snapshot = null;
-  state.patterns[0] = null;
+  state.patterns[test.part] = null;
 }
 
 // Everything read so far, as text to paste into a message when something looks wrong.
@@ -369,7 +405,7 @@ function report() {
     session: state.session,
     parts: state.parts.map(p => p && { ...p, sound: preset(p.soundNumber)?.name ?? null }),
     patterns: state.patterns,
-    write: state.write.result,
+    writeTests: Object.fromEntries(Object.entries(state.tests).map(([id, w]) => [id, w.result])),
     scenes: state.scenes,
     stats: state.link?.stats ?? null,
     log: state.log,
@@ -404,9 +440,6 @@ async function start() {
   $('connect').addEventListener('click', () => run(connect));
   $('read-all').addEventListener('click', () => run(readEverything));
   $('copy-report').addEventListener('click', copyReport);
-  $('write-kick').addEventListener('click', () => run(writeKick));
-  $('write-cancel').addEventListener('click', () => { state.write.armed = null; render(); });
-  $('write-restore').addEventListener('click', () => run(restoreKick));
   $('port-use').addEventListener('click', () => run(async () => {
     await state.transport.connectTo(Number($('port-in').value), Number($('port-out').value));
     await afterConnect($('port-out').selectedOptions[0]?.textContent ?? 'MIDI device');

@@ -64,10 +64,43 @@ export function demoProject() {
 }
 
 export class SimTransport {
+  rollList(base) {
+    const list = [];
+    for (let i = 0; i < 2048; i++) {
+      const d = this.memory.get(key([0x75, base | (i >> 7), i & 0x7f]));
+      if (!d || d.length < 8) break;
+      list.push(d);
+    }
+    return list;
+  }
+
+  setRollList(base, list) {
+    const old = this.rollList(base).length;
+    for (let i = 0; i <= Math.max(old, list.length); i++) {
+      this.memory.set(key([0x75, base | (i >> 7), i & 0x7f]), i < list.length ? list[i] : []);
+    }
+  }
+
   // The only writes the simulator understands: step record add / change / delete on parts 0-6.
   applyWrite({ addr, data }) {
     if (this.random() < this.writeDropRate) return;
     const [ah, am, al] = addr;
+    if (ah === 0x72 && al === 0x00 && data.length === 8) {            // piano-roll add
+      const base = am & 0xf0;
+      const list = this.rollList(base);
+      list.push([...data]);
+      list.sort((x, y) => (x[0] << 7 | x[1]) - (y[0] << 7 | y[1]));
+      this.setRollList(base, list);
+      return;
+    }
+    if (ah === 0x01 && (am & 0xf0) === 0x10 && al === 0x37 && data.length === 1) {   // clear pattern
+      const p = am & 0x0f;
+      const selected = (this.memory.get(key([0x30, 0x50 | p, 0x0f])) || [0])[0];
+      if (data[0] !== selected) return;                 // the simulator only models the selected pattern
+      if (p >= 7) this.setRollList((p - 7) << 4, []);
+      else for (let st = 0; st < 128; st++) this.memory.set(key([0x70, 0x40 | p, st]), []);
+      return;
+    }
     if (ah !== 0x70) return;
     const mode = am & 0xf0;
     const part = am & 0x0f;

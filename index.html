@@ -39,14 +39,9 @@
   </section>
 
   <section class="card">
-    <h2>Write test</h2>
-    <p class="dim">Writes a kick on steps 1, 5, 9 and 13 of the KICK track, into the pattern selected on the SEQTRAK, in its current project. It reads the pattern first, changes only the steps that differ, then reads it back to check. Stop the sequencer first.</p>
-    <div class="row">
-      <button id="write-kick" disabled>Write test kick</button>
-      <button id="write-cancel" hidden>Cancel</button>
-      <button id="write-restore" disabled>Put the old pattern back</button>
-    </div>
-    <div id="write-result"></div>
+    <h2>Write tests</h2>
+    <p class="dim">Each test writes into the pattern selected on the SEQTRAK for that track, in its current project. It reads the pattern first, writes, then reads it back to check, and can put the old pattern back. Stop the sequencer first.</p>
+    <div id="write-tests"></div>
   </section>
 
   <section class="card">

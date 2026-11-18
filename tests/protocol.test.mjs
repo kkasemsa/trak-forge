@@ -7,7 +7,7 @@ import { Link } from '../js/seqtrak/link.js';
 import { SimTransport } from '../js/seqtrak/sim.js';
 import { readSession, readPart, readPattern, readScenes, noteName } from '../js/seqtrak/probe.js';
 import { preset } from '../js/seqtrak/catalog.js';
-import { writeDrumPattern, readSteps, everyNth, DEFAULT_STEP, WriteRefused } from '../js/seqtrak/writer.js';
+import { writeDrumPattern, readSteps, everyNth, DEFAULT_STEP, WriteRefused, writeRoll, readRoll, rollNote, testBass } from '../js/seqtrak/writer.js';
 
 let passed = 0;
 const test = async (name, fn) => { await fn(); passed++; console.log(`  ok  ${name}`); };
@@ -266,6 +266,49 @@ await test('writing is refused while playing, on a non-drum track, or when the m
   const silent = new SimTransport({ dropRate: 1 });
   await assert.rejects(writeDrumPattern(new Link(silent, { ...fast, attempts: 2 }), 0, everyNth(16)), WriteRefused);
   for (const tr of [playing, t, silent]) assert.equal(tr.sent.some(f => (f[2] & 0xf0) === 0x10), false, 'no write frame may be sent');
+});
+
+// ---------- piano-roll writer
+
+await test('piano-roll note frame matches the documented layout', async () => {
+  assert.deepEqual(rollNote(0, 36), [0x00, 0x3c, 0x00, 0x24, 0x64, 0x00, 0x00, 0x78]);
+  assert.deepEqual(rollNote(8, 60, { offset: 0, gate: 360 }), [0x07, 0x40, 0x00, 0x3c, 0x64, 0x00, 0x02, 0x68]);
+  const t = new SimTransport();
+  const link = new Link(t, { ...fast, writePaceMs: 0 });
+  await writeRoll(link, 9, [rollNote(1, 72)]);                        // DX = local index 2
+  const writes = t.sent.filter(f => (f[2] & 0xf0) === 0x10).map(hex);
+  assert.deepEqual(writes, [
+    'F0 43 10 7F 1C 0C 01 19 37 00 F7',                               // clear pattern 0 of part 9
+    'F0 43 10 7F 1C 0C 72 20 00 01 34 00 48 64 00 00 78 F7',          // add at tick 180
+  ]);
+});
+
+await test('writing a synth pattern replaces it, verifies, and can be restored', async () => {
+  const t = new SimTransport();
+  const link = new Link(t, { ...fast, writePaceMs: 0 });
+  const r = await writeRoll(link, 7, testBass(16));
+  assert.equal(r.before.length, 4);
+  assert.equal(r.after.length, 5);                                    // 4 beats + the fifth on step 14
+  assert.equal(r.ok, true);
+  assert.equal((await readRoll(link, 8)).length, 2, 'SYNTH 2 must be untouched');
+  const back = await writeRoll(link, 7, r.before);
+  assert.equal(back.ok, true);
+  assert.deepEqual(back.after, r.before);
+});
+
+await test('synth writing stops if the clear did not work, and refuses bad input', async () => {
+  const stuck = new SimTransport();
+  stuck.memory.set('48,87,15', [2]);                                  // machine has pattern 3 selected...
+  const link = new Link(stuck, { ...fast, writePaceMs: 0 });
+  const realApply = stuck.applyWrite.bind(stuck);
+  stuck.applyWrite = msg => { if (msg.addr[0] !== 0x01) realApply(msg); };   // ...and ignores the clear
+  await assert.rejects(writeRoll(link, 7, testBass(16)), /clear command left 4/);
+  assert.equal(stuck.sent.some(f => f[6] === 0x72), false, 'no note may be added after a failed clear');
+  const t = new SimTransport();
+  const l2 = new Link(t, fast);
+  await assert.rejects(writeRoll(l2, 7, [rollNote(16, 36)]), WriteRefused);   // past the end of 16 steps
+  await assert.rejects(writeRoll(l2, 3, testBass(16)), WriteRefused);         // a drum part
+  assert.equal(t.sent.some(f => (f[2] & 0xf0) === 0x10), false);
 });
 
 console.log(`${passed} tests passed`);

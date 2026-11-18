@@ -20,24 +20,30 @@ Not affiliated with or endorsed by Yamaha. SEQTRAK is a Yamaha trademark.
 **Reading never writes.** The probe only sends Parameter Requests and one Identity Request; a test
 (`the probe sends only read frames`) fails if it produces anything else.
 
-## Phase 2, first step: the write test
+## Phase 2: the write tests
 
-The **Write test** card writes a kick on steps 1, 5, 9 and 13 of the KICK track, into the pattern
-selected on the SEQTRAK, in its current project. It is the only part of the app that changes the
-machine. It reads the pattern first, changes only the steps that differ, reads everything back and
-says whether the read-back matches. "Put the old pattern back" restores what was there. It refuses
-to write while the sequencer plays, or if the SEQTRAK does not answer every question about where
-the write would land. All writing code is in `js/seqtrak/writer.js`.
+The **Write tests** card is the only part of the app that changes the machine. Each test writes
+into the pattern selected on the SEQTRAK for that track, in its current project:
+
+- **KICK** (step record): a kick on steps 1, 5, 9 and 13. Changes only the steps that differ.
+- **SYNTH 1** (piano roll): clears the pattern, then writes C1 on every beat and G1 on step 15 of
+  each bar.
+
+Both read the pattern first, read everything back after writing, and say whether the read-back
+matches. "Put the old pattern back" restores what was there. They refuse to write while the
+sequencer plays, or if the SEQTRAK does not answer every question about where the write would
+land. All writing code is in `js/seqtrak/writer.js`.
 
 ## Status: what is and is not verified
 
 | Part | State |
 |---|---|
-| Protocol code (framing, retries, decoding) | Tested against a simulator: `npm test`, 27 tests. Byte strings are checked against the worked examples in seqtrak-docs. |
+| Protocol code (framing, retries, decoding) | Tested against a simulator: `npm test`, 30 tests. Byte strings are checked against the worked examples in seqtrak-docs. |
 | Screens | Checked in a desktop browser in demo mode. |
 | Swift CoreMIDI plugin | Compiles: the `build` workflow on GitHub builds the app for the iOS Simulator. Runs on a real iPad since 0.1.2. |
 | Reading, on an iPad with a SEQTRAK (OS 2.0, USB-C) | Works (2026-11-17): 135 requests, 135 replies. Drum sound names and the mute flag are not resolved yet. |
-| Writing, on real hardware | **Not tested yet.** |
+| Writing drum steps, on real hardware | Works (2026-11-18): read-back verified. |
+| Writing synth notes, on real hardware | **Not tested yet.** |
 
 ## First test on hardware
 
