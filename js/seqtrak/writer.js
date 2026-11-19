@@ -164,7 +164,11 @@ export async function writeRoll(link, part, wanted, onProgress = () => {}, { fre
   const extra = got.filter(k => !want.includes(k)).length;
   const moved = still.project !== target.project || still.pattern !== target.pattern;
   const matches = want.length === got.length && want.every((k, i) => k === got[i]);
-  return { target, before, after, changed: wanted.length, missing, extra, moved, ok: matches && !moved };
+  // On a mismatch, say exactly what differs: the first few events sent but not found, and found
+  // but not sent, as "tick/note/velocity/gate".
+  const show = k => { const e = k.split(',').map(Number); return `${(e[0] << 7) | e[1]}/${e[3]}/${e[4]}/${(e[6] << 7) | e[7]}`; };
+  const diff = matches ? '' : `sent ${want.length}, found ${got.length}; not found: ${want.filter(k => !got.includes(k)).slice(0, 4).map(show).join(' ') || 'none'}; unexpected: ${got.filter(k => !want.includes(k)).slice(0, 4).map(show).join(' ') || 'none'}`;
+  return { target, before, after, changed: wanted.length, missing, extra, moved, diff, ok: matches && !moved };
 }
 
 // One note on the grid. `offset` is the position inside the step: 60 is the centre the machine
@@ -267,7 +271,7 @@ export async function writeGroove(link, groove, onProgress = () => {}) {
       } else {
         const target = await readRollTarget(link, t.part);
         const r = await writeRoll(link, t.part, t.roll(target.steps));
-        add(`${t.name}: pattern ${r.target.pattern + 1}, ${r.target.steps} steps`, r.ok, r.ok ? `${r.changed} note(s) written` : `read-back does not match (${r.missing} missing, ${r.extra} unexpected)`);
+        add(`${t.name}: pattern ${r.target.pattern + 1}, ${r.target.steps} steps`, r.ok, r.ok ? `${r.changed} note(s) written` : `read-back does not match: ${r.diff}`);
       }
     } catch (e) {
       add(`${t.name}: stopped`, false, e?.message || String(e));
@@ -375,12 +379,23 @@ export async function writeSong(link, song, onProgress = () => {}) {
         if (!(await setPatternLength(link, t.part, slot, pat.steps))) throw new WriteRefused(`pattern ${slot + 1} length could not be set to ${pat.steps}`);
         const r = isDrum ? await writeDrumPattern(link, t.part, content, undefined, { fresh: true }) : await writeRoll(link, t.part, content, undefined, { fresh: true });
         if (r.target.pattern !== slot) throw new WriteRefused(`the write landed in pattern ${r.target.pattern + 1}, not ${slot + 1}`);
-        add(`${t.name}: pattern ${slot + 1}, ${pat.steps} steps`, r.ok, r.ok ? (isDrum ? `${content.filter(Boolean).length} hit(s)` : `${content.length} note(s)`) : 'read-back does not match');
+        add(`${t.name}: pattern ${slot + 1}, ${pat.steps} steps`, r.ok, r.ok ? (isDrum ? `${content.filter(Boolean).length} hit(s)` : `${content.length} note(s)`) : isDrum ? `read-back does not match on step(s) ${r.mismatches.slice(0, 8).map(x => x + 1).join(', ')}` : `read-back does not match: ${r.diff}`);
       }
       if (t.patterns.length > 1) await selectPattern(link, t.part, 0);
     } catch (e) {
       add(`${t.name}: stopped`, false, e?.message || String(e));
     }
+  }
+
+  // Tracks the song does not use keep whatever they held. Scene mutes silence them when a scene is
+  // recalled, but not when the machine is simply playing, so mute them on the track as well.
+  try {
+    const usedParts = new Set(song.tracks.map(t => t.part));
+    let allMuted = true;
+    for (let p = 0; p < ALL_PARTS; p++) if (!usedParts.has(p)) allMuted = (await setByte(link, [0x30, 0x50 | p, 0x29], 125)) && allMuted;
+    if (usedParts.size < ALL_PARTS) add(`${ALL_PARTS - usedParts.size} unused tracks muted`, allMuted);
+  } catch (e) {
+    add('Unused tracks: stopped', false, e?.message || String(e));
   }
 
   onProgress('Scenes', total - 1, total);

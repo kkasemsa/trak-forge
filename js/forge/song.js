@@ -53,7 +53,9 @@ function melodicContent(notes, steps) {
     const key = `${tick}:${pitch}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    const gate = clamp(Math.round(n.duration * 480), 10, 16383);
+    // The machine shortens a note that would ring past the end of its pattern (seen on hardware),
+    // so do it here: otherwise the read-back can never match what was sent.
+    const gate = clamp(Math.round(n.duration * 480), 10, Math.min(16383, limit - tick));
     const ev = rollNote(0, pitch, { velocity: clamp(Math.round(n.velocity ?? 100), 1, 127), gate, offset: 0 });
     ev[0] = (tick >> 7) & 0x7f;
     ev[1] = tick & 0x7f;

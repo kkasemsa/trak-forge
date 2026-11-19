@@ -427,6 +427,7 @@ await test('every starter builds a song that fits the SEQTRAK', async () => {
             assert.equal(e.length, 8);
             assert.ok(e.every(b => Number.isInteger(b) && b >= 0 && b <= 127), `${st.id} ${t.name}: 7-bit`);
             assert.ok(((e[0] << 7) | e[1]) < p.steps * 120, `${st.id} ${t.name}: event past the end`);
+            assert.ok(((e[0] << 7) | e[1]) + ((e[6] << 7) | e[7]) <= p.steps * 120, `${st.id} ${t.name}: note rings past the end`);
           }
         }
       }
@@ -441,6 +442,24 @@ await test('every starter builds a song that fits the SEQTRAK', async () => {
     if (song.merged) mergedSongs++;
   }
   console.log(`      ${starters.length} starters; ${mergedSongs} needed patterns merged to fit 6 slots`);
+});
+
+await test('a machine that shortens a note is reported with the exact difference', async () => {
+  const t = new SimTransport();
+  const real = t.applyWrite.bind(t);
+  t.applyWrite = msg => { if (msg.addr[0] === 0x72) msg.data[7] = 100; real(msg); };      // gate forced to 100
+  const r = await writeRoll(new Link(t, { ...fast, writePaceMs: 0 }), 7, [rollNote(0, 36)]);
+  assert.equal(r.ok, false);
+  assert.equal(r.diff, 'sent 1, found 1; not found: 60/36/100/120; unexpected: 60/36/100/100');
+});
+
+await test('tracks a song does not use are muted on the track, the ones it uses are not', async () => {
+  const song = buildSong('cosmicVoyage', 440978);
+  const used = new Set(song.tracks.map(x => x.part));
+  const t = new SimTransport();
+  const r = await writeSong(new Link(t, { ...fast, writePaceMs: 0 }), song);
+  assert.equal(r.ok, true, JSON.stringify(r.checks.filter(c => !c.ok)));
+  for (let p = 0; p < 11; p++) assert.equal(t.memory.get(`48,${0x50 | p},41`)[0], used.has(p) ? 0 : 125, `part ${p}`);
 });
 
 await test('the same starter and seed give the same song; another seed gives another', async () => {
