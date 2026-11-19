@@ -53,15 +53,27 @@ function melodicContent(notes, steps) {
     const key = `${tick}:${pitch}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    // The machine shortens a note that would ring past the end of its pattern (seen on hardware),
-    // so do it here: otherwise the read-back can never match what was sent.
-    const gate = clamp(Math.round(n.duration * 480), 10, Math.min(16383, limit - tick));
+    const gate = clamp(Math.round(n.duration * 480), 10, 16383);
     const ev = rollNote(0, pitch, { velocity: clamp(Math.round(n.velocity ?? 100), 1, 127), gate, offset: 0 });
     ev[0] = (tick >> 7) & 0x7f;
     ev[1] = tick & 0x7f;
     out.push(ev);
   }
-  return out.sort((a, b) => ((a[0] << 7) | a[1]) - ((b[0] << 7) | b[1]) || a[3] - b[3]);
+  out.sort((a, b) => ((a[0] << 7) | a[1]) - ((b[0] << 7) | b[1]) || a[3] - b[3]);
+  // The machine does not keep two overlapping notes of the same pitch: every pattern that held
+  // such a pair failed its read-back on hardware, and every pattern without one passed. So end
+  // the earlier note where the next one of the same pitch starts.
+  const last = new Map();
+  for (const ev of out) {
+    const prev = last.get(ev[3]);
+    if (prev) {
+      const start = (prev[0] << 7) | prev[1];
+      const room = ((ev[0] << 7) | ev[1]) - start;
+      if (((prev[6] << 7) | prev[7]) > room) { prev[6] = (room >> 7) & 0x7f; prev[7] = room & 0x7f; }
+    }
+    last.set(ev[3], ev);
+  }
+  return out;
 }
 
 // Splits a drum clip into one step pattern per SEQTRAK drum track.

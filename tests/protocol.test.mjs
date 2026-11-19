@@ -423,11 +423,17 @@ await test('every starter builds a song that fits the SEQTRAK', async () => {
           for (const h of p.content) if (h) assert.ok(h.velocity >= 1 && h.velocity <= 127 && h.microTiming >= 0 && h.microTiming <= 119);
         } else {
           assert.ok(p.content.length > 0);
+          const open = new Map();                       // pitch -> tick where its last note ends
+          for (const e of p.content) {
+            const tick = (e[0] << 7) | e[1];
+            assert.ok(!(open.get(e[3]) > tick), `${st.id} ${t.name}: overlapping notes of the same pitch`);
+            assert.ok(((e[6] << 7) | e[7]) >= 1, `${st.id} ${t.name}: zero-length note`);
+            open.set(e[3], tick + ((e[6] << 7) | e[7]));
+          }
           for (const e of p.content) {
             assert.equal(e.length, 8);
             assert.ok(e.every(b => Number.isInteger(b) && b >= 0 && b <= 127), `${st.id} ${t.name}: 7-bit`);
             assert.ok(((e[0] << 7) | e[1]) < p.steps * 120, `${st.id} ${t.name}: event past the end`);
-            assert.ok(((e[0] << 7) | e[1]) + ((e[6] << 7) | e[7]) <= p.steps * 120, `${st.id} ${t.name}: note rings past the end`);
           }
         }
       }
