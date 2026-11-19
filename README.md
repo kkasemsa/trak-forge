@@ -7,6 +7,28 @@ preset names, tempo, key, pattern contents and scenes.
 
 Not affiliated with or endorsed by Yamaha. SEQTRAK is a Yamaha trademark.
 
+## Using it
+
+The app has three tabs.
+
+**Song** is the app proper, top to bottom:
+
+1. **Starter**: pick a genre and one of the 119 MIDI FORGE starters.
+2. **Song**: the song that starter and seed make (name, tempo, key, scenes x tracks). "New song"
+   rolls a new seed.
+3. **Sounds**: one row per track, KICK to DX. Tap a row to open the sound picker (search, or
+   browse by category) for that track's engine. With the SEQTRAK connected the sound is loaded
+   on the machine at once and a test note is played, so sounds are chosen by ear. Choices are
+   remembered per starter; "Use suggested sounds" drops them. Tracks the song does not use can
+   be changed too: that only loads the sound.
+4. **Write**: writes tempo, sounds, patterns and scenes into the project that is current on the
+   SEQTRAK, and says how many steps were verified by reading back.
+
+**Machine** shows what the SEQTRAK holds (session, tracks, notes, scenes). **Tools** has the
+report button, the write tests and the MIDI log.
+
+On the SEQTRAK, scenes only take effect in Song mode or Scene mode: hold ALL and press PROJECT.
+
 ## What phase 1 does
 
 - Connects to the SEQTRAK over USB-C through CoreMIDI.

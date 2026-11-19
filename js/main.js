@@ -1,12 +1,13 @@
-// TRAK FORGE, phase 1: a read-only view of what a SEQTRAK is holding.
+// TRAK FORGE: pick a MIDI FORGE starter, choose sounds, write the song into a SEQTRAK.
+// Song tab = the app; Machine tab = what the SEQTRAK holds; Tools tab = tests and the report.
 import { VERSION } from './version.js';
 import { createTransport, isNative } from './transport.js';
 import { Link } from './seqtrak/link.js';
 import { hex } from './seqtrak/sysex.js';
 import { readSession, readPart, readPattern, readScenes, PARTS, PART_COUNT, noteName } from './seqtrak/probe.js';
-import { preset } from './seqtrak/catalog.js';
+import { preset, presetsFor } from './seqtrak/catalog.js';
 import { buildSong, listStarters, FAMILIES } from './forge/song.js';
-import { writeDrumPattern, readTarget, everyNth, writeRoll, readRollTarget, testBass, writeGroove, TEST_GROOVE, writeSong, TEST_SONG } from './seqtrak/writer.js';
+import { writeDrumPattern, readTarget, everyNth, writeRoll, readRollTarget, testBass, writeGroove, TEST_GROOVE, writeSong, TEST_SONG, loadSound } from './seqtrak/writer.js';
 
 const $ = id => document.getElementById(id);
 
@@ -41,6 +42,13 @@ const state = {
   tests: {},
   bulk: { forge: { armed: null, result: null }, groove: { armed: null, result: null }, song: { armed: null, result: null } },
   forgeSong: null,
+  tab: 'song',
+  starterId: null,
+  family: '',
+  sounds: {},          // part -> { state: 'sending' | 'ok' | 'bad' } for sounds sent to the machine
+  live: {},            // part -> sound picked for a track the current song does not use
+  picker: null,        // { part, category, query }
+  machine: {},         // part -> sound number read from the SEQTRAK at connect
   log: [],
 };
 
@@ -71,16 +79,10 @@ function renderStatus() {
   }
   if (state.busy && !state.connected) { pill.className = 'pill'; pill.textContent = 'Working'; }
   const banner = $('banner');
-  if (state.error) {
-    banner.className = 'banner warn';
-    banner.textContent = state.error;
-  } else if (!isNative) {
-    banner.className = 'banner warn';
-    banner.textContent = 'Demo mode. This is not a real SEQTRAK: every value below comes from a built-in simulator. Run the iPad app to read your machine.';
-  } else {
-    banner.className = 'banner';
-    banner.textContent = 'Reading changes nothing on the SEQTRAK. Only the Song starter card and the three test cards write to it.';
-  }
+  banner.hidden = !state.error && isNative;
+  banner.className = 'banner warn';
+  banner.textContent = state.error
+    ?? 'Demo mode. This is not a real SEQTRAK: everything "read" or "written" goes to a built-in simulator. Run the iPad app to use your machine.';
   $('connect').textContent = state.connected ? 'Reconnect' : 'Connect';
   $('connect').disabled = state.busy;
   $('read-all').disabled = !state.connected || state.busy;
@@ -270,7 +272,7 @@ function renderWrite() {
 }
 
 const BULK = [
-  { id: 'forge', idle: 'Write to SEQTRAK', confirm: n => `Confirm: replace scenes, patterns and sounds in project ${n}`, write: (link, onProgress) => writeSong(link, state.forgeSong, onProgress), needs: () => !!state.forgeSong, primary: true },
+  { id: 'forge', idle: 'Write to SEQTRAK', confirm: n => `Confirm: write over project ${n}`, write: (link, onProgress) => writeSong(link, state.forgeSong, onProgress), needs: () => !!state.forgeSong, primary: true, custom: true },
   { id: 'groove', idle: 'Write groove', confirm: n => `Confirm: overwrite five tracks in project ${n}`, write: (link, onProgress) => writeGroove(link, TEST_GROOVE, onProgress) },
   { id: 'song', idle: 'Write song', confirm: n => `Confirm: replace scenes and five tracks in project ${n}`, write: (link, onProgress) => writeSong(link, TEST_SONG, onProgress) },
 ];
@@ -280,20 +282,42 @@ function renderBulk() {
     const g = state.bulk[card.id];
     const b = $(card.id);
     b.disabled = !state.connected || state.busy || (card.needs ? !card.needs() : false);
-    b.className = g.armed !== null ? 'danger' : card.primary ? 'primary' : '';
-    b.textContent = g.armed !== null ? card.confirm(g.armed + 1) : card.idle;
+    b.className = (g.armed !== null ? 'danger' : card.primary ? 'primary' : '') + (card.custom ? ' big' : '');
+    b.textContent = g.armed !== null ? card.confirm(g.armed + 1) : card.custom && !state.connected ? 'Connect the SEQTRAK to write' : card.idle;
     $(`${card.id}-cancel`).hidden = g.armed === null;
     const box = $(`${card.id}-result`);
     box.replaceChildren();
     const r = g.result;
     if (!r) continue;
+    if (card.custom) { box.append(songResult(r)); continue; }
     box.append(el('div', { class: r.ok ? 'result ok' : 'result bad' },
       el('b', {}, r.ok ? 'OK. ' : 'Not everything verified. '), `Project ${r.project + 1}.${r.seconds !== undefined ? ` Took ${r.seconds} s.` : ''}`),
       el('ul', { class: 'checks' }, r.checks.map(c => el('li', { class: c.ok ? 'yes' : 'no' }, c.label, c.detail ? el('small', {}, ` · ${c.detail}`) : null))));
   }
 }
 
+// The outcome of writing a song, said plainly; the full checklist stays one tap away.
+function songResult(r) {
+  const failed = r.checks.filter(c => !c.ok);
+  const song = r.song;
+  const box = el('div', { class: failed.length ? 'done bad' : 'done' });
+  box.append(el('h3', {}, failed.length ? `Written with ${failed.length} problem(s)` : `"${song?.name ?? 'Song'}" is on the SEQTRAK`));
+  box.append(el('p', {}, `Project ${r.project + 1} · ${song ? `${song.scenes.length} scenes · ${song.tempo} BPM · ` : ''}${r.seconds} s · ${r.checks.length - failed.length} of ${r.checks.length} steps verified by reading back.`));
+  if (failed.length) box.append(el('ul', { class: 'checks' }, failed.map(c => el('li', { class: 'no' }, c.label, c.detail ? el('small', {}, ` · ${c.detail}`) : null))));
+  else box.append(el('p', { class: 'dim' }, 'To hear the arrangement: on the SEQTRAK hold ALL and press PROJECT (Song mode plays the scenes in order; the same again gives Scene mode, where you switch scenes yourself). Save the project on the machine to keep it.'));
+  box.append(el('details', { class: 'more' }, el('summary', {}, 'All steps'),
+    el('ul', { class: 'checks' }, r.checks.map(c => el('li', { class: c.ok ? 'yes' : 'no' }, c.label, c.detail ? el('small', {}, ` · ${c.detail}`) : null)))));
+  return box;
+}
+
+function renderTabs() {
+  for (const b of $('tabs').children) b.className = b.dataset.tab === state.tab ? 'on' : '';
+  for (const t of ['song', 'machine', 'tools']) $(`tab-${t}`).hidden = t !== state.tab;
+}
+
 function render() {
+  renderTabs();
+  renderSounds();
   renderWrite();
   renderBulk();
   renderStatus();
@@ -353,6 +377,13 @@ async function afterConnect(name) {
   state.link?.close();
   state.link = new Link(state.transport, { log: logFrame });
   state.identity = await state.link.identity();
+  // Which sound each track holds now, so the Sounds list can show tracks the song does not use.
+  // Ten quick reads; nothing is written.
+  state.machine = {};
+  for (let part = 0; part <= 9; part++) {
+    const r = await state.link.read([0x01, 0x10 | part, 0x33]);
+    if (r.ok && r.data.length >= 2) state.machine[part] = ((r.data[0] << 7) | r.data[1]) + 1;
+  }
 }
 
 async function connect() {
@@ -414,49 +445,206 @@ async function runTest(test) {
 // ---------- song starter
 
 const STARTERS = listStarters();
+const ROLE = { bass: 'Bass', chords: 'Chords', pad: 'Pad', arp: 'Arp', lead: 'Lead', counterMelody: 'Counter melody', drums: 'Drums' };
+
+// Sound choices are remembered per starter, so a new seed of the same starter keeps them.
+const STORE = 'trakforge.sounds.v1';
+function loadChoices() {
+  try { return JSON.parse(localStorage.getItem(STORE) || '{}') || {}; } catch { return {}; }
+}
+function saveChoices(all) {
+  try { localStorage.setItem(STORE, JSON.stringify(all)); } catch { /* storage unavailable: choices last for this session */ }
+}
+const choices = loadChoices();
+const chosen = () => (choices[state.starterId] ??= {});
 
 function rebuildSong() {
-  const id = $('st-starter').value;
   const seed = Math.max(1, Math.min(999999, Number($('st-seed').value) || 1));
-  const meta = STARTERS.find(x => x.id === id);
+  const meta = STARTERS.find(x => x.id === state.starterId);
   $('st-desc').textContent = meta ? meta.desc : '';
   const box = $('st-preview');
   box.replaceChildren();
   try {
-    state.forgeSong = buildSong(id, seed);
+    state.forgeSong = buildSong(state.starterId, seed);
   } catch (e) {
     state.forgeSong = null;
     box.append(el('div', { class: 'note' }, `This starter could not be built: ${e?.message || e}`));
     return;
   }
   const song = state.forgeSong;
-  const v = song.voices;
-  box.append(el('div', { class: 'song-head' }, el('b', {}, song.name), ` · ${song.tempo} BPM · ${song.key} · SYNTH 1 = ${v.bass ?? 'none'}, SYNTH 2 = ${v.harmony ?? 'none'}, DX = ${v.lead ?? 'none'}`));
+  for (const t of song.tracks) {
+    t.suggested = t.sound;
+    const pick = chosen()[t.part];
+    if (pick && preset(pick)) t.sound = pick;
+  }
+  box.append(el('div', { class: 'song-head' }, el('b', {}, song.name), ` · ${song.tempo} BPM · ${song.key}`));
   const head = el('tr', {}, el('th', {}, 'Scene'), song.tracks.map(t => el('th', {}, t.name)));
   const rows = song.scenes.map((sc, i) => el('tr', {}, el('td', {}, `${i + 1} ${sc.name}`),
     song.tracks.map(t => (t.part in sc.play ? el('td', { class: 'on' }, `P${sc.play[t.part] + 1}`) : el('td', { class: 'off' }, '-')))));
-  const sounds = el('tr', {}, el('td', {}, 'Sound'), song.tracks.map(t => el('td', {}, preset(t.sound)?.name ?? `#${t.sound}`)));
-  box.append(el('table', { class: 'scene-table' }, head, rows, sounds));
+  box.append(el('table', { class: 'scene-table' }, head, rows));
   const events = song.tracks.reduce((a, t) => a + t.patterns.reduce((b, p) => b + (t.part <= 6 ? p.content.filter(Boolean).length : p.content.length), 0), 0);
   const patterns = song.tracks.reduce((a, t) => a + t.patterns.length, 0);
-  box.append(el('p', { class: 'dim' }, `${song.scenes.length} scenes, ${patterns} patterns, ${events} notes. Patterns are 8 bars at most.${song.merged ? ` ${song.merged} section pattern(s) were folded into a similar one to fit six slots per track.` : ''} Sounds are a first guess by name: change them on the machine to taste.`));
+  box.append(el('p', { class: 'dim' }, `${song.scenes.length} scenes, ${patterns} patterns, ${events} notes. P = the pattern a track plays in that scene; "-" = silent. Patterns are 8 bars at most.${song.merged ? ` ${song.merged} section pattern(s) were folded into a similar one to fit six per track.` : ''}`));
+}
+
+function songChanged() {
+  state.bulk.forge.armed = null;
+  state.bulk.forge.result = null;
+  state.sounds = {};
+  rebuildSong();
+  renderStarters();
+  render();
+}
+
+function renderStarters() {
+  $('st-families').replaceChildren(
+    ...[['', 'All'], ...FAMILIES.map(f => [f, f])].map(([value, label]) =>
+      el('button', { class: state.family === value ? 'chip on' : 'chip', onclick: () => { state.family = value; renderStarters(); } }, label)));
+  const list = STARTERS.filter(x => !state.family || x.family === state.family);
+  $('st-list').replaceChildren(...list.map(x =>
+    el('button', { class: x.id === state.starterId ? 'starter on' : 'starter', onclick: () => { state.starterId = x.id; songChanged(); } },
+      el('b', {}, x.name), el('small', {}, `${x.family} · ${x.bpm} BPM`))));
 }
 
 function setupStarters() {
-  const fam = $('st-family');
-  fam.replaceChildren(el('option', { value: '' }, 'All'), ...FAMILIES.map(f => el('option', { value: f }, f)));
-  const fill = () => {
-    const list = STARTERS.filter(x => !fam.value || x.family === fam.value);
-    $('st-starter').replaceChildren(...list.map(x => el('option', { value: x.id }, `${x.name} (${x.bpm})`)));
-  };
-  const changed = () => { state.bulk.forge.armed = null; state.bulk.forge.result = null; rebuildSong(); render(); };
-  fam.addEventListener('change', () => { fill(); changed(); });
-  $('st-starter').addEventListener('change', changed);
-  $('st-seed').addEventListener('change', changed);
-  $('st-roll').addEventListener('click', () => { $('st-seed').value = String(1 + Math.floor(Math.random() * 999998)); changed(); });
+  // Rebuild as the seed is typed, and never when nothing changed: a rebuild replaces the buttons
+  // below, and one triggered by the field losing focus would swallow the tap that caused it.
+  const seedEdited = () => { if ((Number($('st-seed').value) || 1) !== state.forgeSong?.seed) songChanged(); };
+  $('st-seed').addEventListener('input', seedEdited);
+  $('st-seed').addEventListener('change', seedEdited);
+  $('st-roll').addEventListener('click', () => { $('st-seed').value = String(1 + Math.floor(Math.random() * 999998)); songChanged(); });
   $('st-seed').value = String(1 + Math.floor(Math.random() * 999998));
-  fill();
+  state.starterId = STARTERS[0].id;
+  $('snd-reset').addEventListener('click', () => { delete choices[state.starterId]; saveChoices(choices); songChanged(); });
   rebuildSong();
+  renderStarters();
+}
+
+// ---------- sounds
+
+// The sound a track will get: the song's (suggested or chosen) for a track the song uses, or
+// whatever was picked here / read from the machine for one it does not.
+function soundOf(part) {
+  const t = state.forgeSong?.tracks.find(x => x.part === part);
+  if (t) return t.sound;
+  return state.live[part] ?? state.parts[part]?.soundNumber ?? state.machine[part] ?? null;
+}
+
+function renderSounds() {
+  const song = state.forgeSong;
+  $('snd-help').textContent = state.connected
+    ? 'Tap a sound to change it. The SEQTRAK loads it at once and plays a note, so you can choose by ear.'
+    : 'Tap a sound to change it. Connect the SEQTRAK to hear each choice as you make it.';
+  $('snd-reset').disabled = !Object.keys(choices[state.starterId] ?? {}).length;
+  const box = $('sounds');
+  box.replaceChildren();
+  for (let part = 0; part <= 9; part++) {
+    const t = song?.tracks.find(x => x.part === part);
+    const number = soundOf(part);
+    const info = preset(number);
+    const changed = !!t && t.sound !== t.suggested;
+    const st = state.sounds[part]?.state;
+    const role = t ? (part <= 6 ? `${t.patterns.length} pattern${t.patterns.length > 1 ? 's' : ''}` : `${ROLE[t.source] ?? t.source} · ${t.patterns.length} pattern${t.patterns.length > 1 ? 's' : ''}`) : 'not in this song';
+    box.append(el('div', { class: ['snd', t ? '' : 'off', changed ? 'changed' : ''].filter(Boolean).join(' ') },
+      el('div', { class: 'snd-name' }, el('b', {}, PARTS[part]), el('small', {}, role)),
+      el('button', { class: 'snd-pick', onclick: () => openPicker(part) },
+        el('span', {}, el('b', {}, info ? info.name : number ? `User sound #${number}` : 'Choose a sound'),
+          el('small', {}, info ? `${info.category}${changed ? ' · your choice' : t ? ' · suggested' : ' · on the SEQTRAK now'}` : number ? 'not a catalogue preset' : 'leaves the track as it is')),
+        el('span', { class: 'chev' }, '›')),
+      el('div', { class: `snd-state ${st === 'ok' ? 'ok' : st === 'bad' ? 'bad' : ''}` }, st === 'ok' ? 'on SEQTRAK' : st === 'bad' ? 'not loaded' : st === 'sending' ? 'sending' : '')));
+  }
+}
+
+// Sends a sound to the machine now and plays one note with it. Outside the normal busy lock so
+// the picker stays responsive; the link itself still sends one message at a time.
+async function audition(part, number) {
+  if (!state.connected || state.busy) return;
+  const token = (state.sounds[part] = { state: 'sending' });
+  renderSounds(); renderPickerFoot();
+  let ok = false;
+  try {
+    ok = await loadSound(state.link, part, number, { waitMs: 100, tries: 8 });
+    if (ok) {
+      const note = part <= 6 ? 60 : part === 7 && state.forgeSong?.voices.bass ? 36 : 60;
+      await state.link.sendRaw([0x90 | part, note, 100]);
+      setTimeout(() => state.link?.sendRaw([0x80 | part, note, 0]).catch(() => {}), 350);
+    }
+  } catch (e) {
+    console.error(e);
+  }
+  if (state.sounds[part] !== token) return;       // a newer pick took over
+  token.state = ok ? 'ok' : 'bad';
+  if (state.parts[part] && ok) state.parts[part].soundNumber = number;
+  if (ok) state.machine[part] = number;
+  renderSounds(); renderPickerFoot();
+}
+
+function setSound(part, number) {
+  const t = state.forgeSong?.tracks.find(x => x.part === part);
+  if (t) {
+    t.sound = number;
+    if (number === t.suggested) delete chosen()[part]; else chosen()[part] = number;
+    saveChoices(choices);
+    state.bulk.forge.result = null;
+  } else state.live[part] = number;
+  audition(part, number);
+  renderSounds();
+  renderPicker();
+}
+
+// ---------- sound picker
+
+// Where the list opens for a track that has no catalogue sound yet.
+const NATURAL_CATEGORY = { 0: 'Kick', 1: 'Snare', 2: 'Clap', 3: 'Closed HiHat', 4: 'Open HiHat' };
+
+function openPicker(part) {
+  const now = preset(soundOf(part));
+  state.picker = { part, category: now?.category ?? NATURAL_CATEGORY[part] ?? '', query: '' };
+  $('pk-search').value = '';
+  $('picker').hidden = false;
+  renderPicker();
+  $('pk-list').querySelector('.on')?.scrollIntoView({ block: 'center' });
+}
+
+function closePicker() {
+  state.picker = null;
+  $('picker').hidden = true;
+  render();
+}
+
+function renderPickerFoot() {
+  const pk = state.picker;
+  if (!pk) return;
+  const st = state.sounds[pk.part]?.state;
+  $('pk-foot').textContent = !state.connected ? 'Not connected: the choice is kept and sent when you write the song.'
+    : st === 'sending' ? 'Sending to the SEQTRAK…'
+      : st === 'ok' ? 'Loaded on the SEQTRAK. A test note was played.'
+        : st === 'bad' ? 'The SEQTRAK did not confirm this sound. Try again.'
+          : 'Tap a sound to load it on the SEQTRAK and hear it.';
+}
+
+const PICKER_LIMIT = 300;
+function renderPicker() {
+  const pk = state.picker;
+  if (!pk) return;
+  const all = presetsFor(pk.part);
+  const current = soundOf(pk.part);
+  $('pk-title').textContent = PARTS[pk.part];
+  $('pk-now').textContent = preset(current)?.name ?? '';
+  const cats = [...new Set(all.map(x => x.category))];
+  $('pk-cats').replaceChildren(
+    ...[['', 'All'], ...cats.map(c => [c, c])].map(([value, label]) =>
+      el('button', { class: pk.category === value ? 'chip on' : 'chip', onclick: () => { pk.category = value; renderPicker(); $('pk-list').scrollTop = 0; } }, label)));
+  const q = pk.query.trim().toLowerCase();
+  // A search looks through every category; without one, the chosen category is shown.
+  const list = all.filter(x => (q ? x.name.toLowerCase().includes(q) || x.category.toLowerCase().includes(q) : !pk.category || x.category === pk.category));
+  const shown = list.slice(0, PICKER_LIMIT);
+  $('pk-list').replaceChildren(...shown.map(x =>
+    el('button', { class: x.number === current ? 'pk-item on' : 'pk-item', onclick: () => setSound(pk.part, x.number) },
+      el('span', {}, x.name), el('small', {}, `${x.category} · ${x.number}`))));
+  if (!shown.length) $('pk-list').append(el('p', { class: 'dim', style: 'padding:12px;margin:0' }, 'No sound matches.'));
+  else if (list.length > shown.length) $('pk-list').append(el('p', { class: 'dim', style: 'padding:12px;margin:0' }, `${list.length - shown.length} more: type to narrow the list.`));
+  renderPickerFoot();
 }
 
 async function runBulk(card) {
@@ -469,6 +657,7 @@ async function runBulk(card) {
   g.armed = null;
   if (project !== armed) throw new Error('The project changed on the SEQTRAK since you pressed the button. Nothing was written.');
   g.result = await card.write(state.link, (label, d, t) => progress(`${card.idle}: ${label}`, d, t));
+  if (card.custom) { g.result.song = { name: state.forgeSong.name, tempo: state.forgeSong.tempo, scenes: state.forgeSong.scenes.map(x => x.name) }; state.sounds = {}; }
   state.patterns.fill(null);
   state.parts.fill(null);
   state.scenes = null;
@@ -499,7 +688,8 @@ function report() {
     patterns: state.patterns,
     groove: state.bulk.groove.result,
     song: state.bulk.song.result,
-    forge: state.forgeSong && { starter: state.forgeSong.starter, seed: state.forgeSong.seed, name: state.forgeSong.name, result: state.bulk.forge.result },
+    forge: state.forgeSong && { starter: state.forgeSong.starter, seed: state.forgeSong.seed, name: state.forgeSong.name, sounds: Object.fromEntries(state.forgeSong.tracks.map(t => [t.name, { sound: t.sound, name: preset(t.sound)?.name ?? null, suggested: t.suggested }])), result: state.bulk.forge.result },
+    soundsSent: state.sounds,
     writeTests: Object.fromEntries(Object.entries(state.tests).map(([id, w]) => [id, w.result])),
     scenes: state.scenes,
     stats: state.link?.stats ?? null,
@@ -543,6 +733,11 @@ async function start() {
     await state.transport.connectTo(Number($('port-in').value), Number($('port-out').value));
     await afterConnect($('port-out').selectedOptions[0]?.textContent ?? 'MIDI device');
   }));
+  for (const b of $('tabs').children) b.addEventListener('click', () => { state.tab = b.dataset.tab; renderTabs(); window.scrollTo(0, 0); });
+  $('pk-done').addEventListener('click', closePicker);
+  $('picker').addEventListener('click', ev => { if (ev.target === $('picker')) closePicker(); });
+  // Typing searches every category, so the category filter is dropped while there is a query.
+  $('pk-search').addEventListener('input', ev => { if (state.picker) { state.picker.query = ev.target.value; if (ev.target.value.trim()) state.picker.category = ''; renderPicker(); } });
   setupStarters();
   window.addEventListener('error', ev => fail('Script error', ev.error || ev.message));
   window.addEventListener('unhandledrejection', ev => fail('Error', ev.reason));

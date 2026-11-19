@@ -12,13 +12,18 @@
 <body>
 <header class="bar">
   <div class="brand">TRAK FORGE <span id="version" class="dim"></span></div>
+  <nav class="tabs" id="tabs">
+    <button data-tab="song" class="on">Song</button>
+    <button data-tab="machine">Machine</button>
+    <button data-tab="tools">Tools</button>
+  </nav>
   <div id="status" class="pill">Starting</div>
-  <button id="copy-report">Copy report</button>
   <button id="connect" class="primary">Connect</button>
 </header>
+<div id="progress" class="progress" hidden><div id="progress-bar"></div><span id="progress-text"></span></div>
 
 <main>
-  <p id="banner" class="banner"></p>
+  <p id="banner" class="banner" hidden></p>
 
   <section id="ports" class="card" hidden>
     <h2>MIDI ports</h2>
@@ -30,76 +35,115 @@
     </div>
   </section>
 
-  <section class="card">
-    <div class="card-head">
-      <h2>Session</h2>
-      <button id="read-all" disabled>Read everything</button>
-    </div>
-    <div id="session" class="facts"></div>
-    <div id="progress" class="progress" hidden><div id="progress-bar"></div><span id="progress-text"></span></div>
-  </section>
+  <div id="tab-song" class="panel">
+    <section class="card">
+      <h2>1 · Starter</h2>
+      <div id="st-families" class="chips"></div>
+      <div id="st-list" class="starters"></div>
+      <p id="st-desc" class="dim"></p>
+    </section>
 
-  <section class="card">
-    <h2>Song starter</h2>
-    <p class="dim">Builds a MIDI FORGE song and writes it into the current project: tempo, sounds, up to six patterns per track and one scene per section. It replaces ALL scenes of the project and the patterns and sounds of every track the song uses. No undo.</p>
-    <div class="row">
-      <label>Genre <select id="st-family"></select></label>
-      <label>Starter <select id="st-starter"></select></label>
-      <label>Seed <input id="st-seed" type="number" inputmode="numeric" min="1" max="999999"></label>
-      <button id="st-roll">New seed</button>
-    </div>
-    <p id="st-desc" class="dim"></p>
-    <div id="st-preview"></div>
-    <div class="row">
-      <button id="forge" class="primary" disabled>Write to SEQTRAK</button>
-      <button id="forge-cancel" hidden>Cancel</button>
-    </div>
-    <div id="forge-result"></div>
-  </section>
+    <section class="card">
+      <div class="card-head">
+        <h2>2 · Song</h2>
+        <div class="row tight">
+          <label class="inline">Seed <input id="st-seed" type="number" inputmode="numeric" min="1" max="999999"></label>
+          <button id="st-roll">New song</button>
+        </div>
+      </div>
+      <div id="st-preview"></div>
+    </section>
 
-  <section class="card">
-    <h2>Write tests</h2>
-    <p class="dim">Each test writes into the pattern selected on the SEQTRAK for that track, in its current project. It reads the pattern first, writes, then reads it back to check, and can put the old pattern back. Stop the sequencer first.</p>
-    <div id="write-tests"></div>
-  </section>
+    <section class="card">
+      <div class="card-head">
+        <h2>3 · Sounds</h2>
+        <button id="snd-reset" class="small">Use suggested sounds</button>
+      </div>
+      <p class="dim" id="snd-help"></p>
+      <div id="sounds"></div>
+    </section>
 
-  <section class="card">
-    <h2>Groove test</h2>
-    <p class="dim">Writes a one-pattern groove into the current project: tempo 124, sounds and patterns on KICK, SNARE, HAT 1, SYNTH 1 (bass) and SYNTH 2 (chord stab), in C minor. It overwrites the selected pattern of those five tracks. No undo.</p>
-    <div class="row">
-      <button id="groove" disabled>Write groove</button>
-      <button id="groove-cancel" hidden>Cancel</button>
-    </div>
-    <div id="groove-result"></div>
-  </section>
+    <section class="card">
+      <h2>4 · Write</h2>
+      <p class="dim">Writes the song into the project that is current on the SEQTRAK: tempo, sounds, patterns and scenes. It replaces all scenes of that project, and the patterns and sounds of every track the song uses. There is no undo, and the project is not saved for you.</p>
+      <div class="row">
+        <button id="forge" class="primary big" disabled>Write to SEQTRAK</button>
+        <button id="forge-cancel" hidden>Cancel</button>
+      </div>
+      <div id="forge-result"></div>
+    </section>
+  </div>
 
-  <section class="card">
-    <h2>Song test</h2>
-    <p class="dim">Writes a small song into the current project: the same five tracks, two patterns on HAT 1, SYNTH 1 and SYNTH 2, all patterns set to 16 steps, and four scenes (Intro, Groove, Full, Lift). It replaces ALL scenes of the project, mutes the six unused tracks in every scene, and overwrites pattern slots 1 and 2 of the five tracks. No undo.</p>
-    <div class="row">
-      <button id="song" disabled>Write song</button>
-      <button id="song-cancel" hidden>Cancel</button>
-    </div>
-    <div id="song-result"></div>
-  </section>
+  <div id="tab-machine" class="panel" hidden>
+    <section class="card">
+      <div class="card-head">
+        <h2>Session</h2>
+        <button id="read-all" disabled>Read everything</button>
+      </div>
+      <div id="session" class="facts"></div>
+    </section>
+    <section class="card">
+      <h2>Tracks</h2>
+      <p class="dim">Notes are read from the pattern currently selected on each track.</p>
+      <div id="tracks"></div>
+    </section>
+    <section class="card">
+      <h2>Scenes</h2>
+      <div id="scenes" class="dim">Not read yet.</div>
+    </section>
+  </div>
 
-  <section class="card">
-    <h2>Tracks</h2>
-    <p class="dim">Notes are read from the pattern currently selected on each track.</p>
-    <div id="tracks"></div>
-  </section>
-
-  <section class="card">
-    <h2>Scenes</h2>
-    <div id="scenes" class="dim">Not read yet.</div>
-  </section>
-
-  <section class="card">
-    <h2>Link</h2>
-    <div id="stats" class="facts"></div>
-    <pre id="log" class="log"></pre>
-  </section>
+  <div id="tab-tools" class="panel" hidden>
+    <section class="card">
+      <div class="card-head">
+        <h2>Report</h2>
+        <button id="copy-report">Copy report</button>
+      </div>
+      <p class="dim">Copies everything the app has read and written in this session, with the MIDI traffic. Send it along when something looks wrong.</p>
+    </section>
+    <section class="card">
+      <h2>Write tests</h2>
+      <p class="dim">Each test writes into the pattern selected on the SEQTRAK for that track, in its current project. It reads the pattern first, writes, then reads it back to check, and can put the old pattern back. Stop the sequencer first.</p>
+      <div id="write-tests"></div>
+    </section>
+    <section class="card">
+      <h2>Groove test</h2>
+      <p class="dim">Writes a one-pattern groove into the current project: tempo 124, sounds and patterns on KICK, SNARE, HAT 1, SYNTH 1 (bass) and SYNTH 2 (chord stab), in C minor. No undo.</p>
+      <div class="row">
+        <button id="groove" disabled>Write groove</button>
+        <button id="groove-cancel" hidden>Cancel</button>
+      </div>
+      <div id="groove-result"></div>
+    </section>
+    <section class="card">
+      <h2>Song test</h2>
+      <p class="dim">Writes a small fixed song: five tracks, two patterns on three of them, four scenes. It replaces all scenes of the project. No undo.</p>
+      <div class="row">
+        <button id="song" disabled>Write song</button>
+        <button id="song-cancel" hidden>Cancel</button>
+      </div>
+      <div id="song-result"></div>
+    </section>
+    <section class="card">
+      <h2>Link</h2>
+      <div id="stats" class="facts"></div>
+      <pre id="log" class="log"></pre>
+    </section>
+  </div>
 </main>
+
+<div id="picker" class="sheet" hidden>
+  <div class="sheet-box">
+    <div class="sheet-head">
+      <div><b id="pk-title"></b> <span id="pk-now" class="dim"></span></div>
+      <button id="pk-done" class="primary">Done</button>
+    </div>
+    <input id="pk-search" type="search" placeholder="Search sounds" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <div id="pk-cats" class="chips"></div>
+    <div id="pk-list" class="pk-list"></div>
+    <div id="pk-foot" class="dim"></div>
+  </div>
+</div>
 
 <script type="module" src="js/main.js"></script>
 </body>
